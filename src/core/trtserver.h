@@ -31,6 +31,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef TRTIS_ENABLE_GPU
+#include <cuda_runtime_api.h>
+#else
+typedef void cudaIpcMemHandle_t;
+#endif  // TRTIS_ENABLE_GPU
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,12 +49,6 @@ extern "C" {
 #define TRTSERVER_EXPORT
 #endif
 
-#ifdef TRTIS_ENABLE_GPU
-#include <cuda_runtime_api.h>
-#else
-typedef void cudaIpcMemHandle_t;
-#endif  // TRTIS_ENABLE_GPU
-
 struct TRTSERVER_Error;
 struct TRTSERVER_InferenceRequestOptions;
 struct TRTSERVER_InferenceRequestProvider;
@@ -58,7 +58,6 @@ struct TRTSERVER_Protobuf;
 struct TRTSERVER_ResponseAllocator;
 struct TRTSERVER_Server;
 struct TRTSERVER_ServerOptions;
-struct TRTSERVER_SharedMemoryBlock;
 struct TRTSERVER_Trace;
 struct TRTSERVER_TraceManager;
 
@@ -125,66 +124,6 @@ TRTSERVER_EXPORT const char* TRTSERVER_ErrorCodeString(TRTSERVER_Error* error);
 /// \param error The error object.
 /// \return The error message.
 TRTSERVER_EXPORT const char* TRTSERVER_ErrorMessage(TRTSERVER_Error* error);
-
-/// TRTSERVER_SharedMemoryBlock
-///
-/// Object representing a reference to a contiguous block of shared
-/// memory. The TRTSERVER_SharedMemoryBlock object does not create or
-/// manage the lifetime of the shared-memory block, it simply
-/// maintains a reference into the block.
-///
-
-/// Create a new shared memory block object referencing a system shared
-/// memory block residing in TRTSERVER_MEMORY_CPU type memory.
-/// \param shared_memory_block Returns the new shared memory block object.
-/// \param name A unique name for the shared memory block. This name
-/// is used in inference requests to refer to this shared memory
-/// block.
-/// \param shm_key The name of the posix shared memory object containing
-/// the block of memory.
-/// \param offset The offset within the system shared memory object to the
-/// start of the block.
-/// \param byte_size The size, in bytes of the block.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_SharedMemoryBlockCpuNew(
-    TRTSERVER_SharedMemoryBlock** shared_memory_block, const char* name,
-    const char* shm_key, const size_t offset, const size_t byte_size);
-
-/// Create a new shared memory block object referencing a CUDA shared
-/// memory block residing in TRTSERVER_MEMORY_GPU type memory.
-/// \param shared_memory_block Returns the new shared memory block object.
-/// \param name A unique name for the shared memory block. This name
-/// is used in inference requests to refer to this shared memory
-/// block.
-/// \param cuda_shm_handle The CUDA IPC handle.
-/// \param byte_size The size, in bytes of the block.
-/// \param device_id The GPU number the CUDA shared memory region is in.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_SharedMemoryBlockGpuNew(
-    TRTSERVER_SharedMemoryBlock** shared_memory_block, const char* name,
-    const cudaIpcMemHandle_t* cuda_shm_handle, const size_t byte_size,
-    const int device_id);
-
-/// Delete a shared memory block object.
-/// \param shared_memory_block The object to delete.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_SharedMemoryBlockDelete(
-    TRTSERVER_SharedMemoryBlock* shared_memory_block);
-
-/// Get the memory type of a shared memory block object.
-/// \param shared_memory_block The object whose memory type is required.
-/// \param memory_type Returns the memory type of the shared memory block.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_Error* TRTSERVER_SharedMemoryBlockMemoryType(
-    TRTSERVER_SharedMemoryBlock* shared_memory_block,
-    TRTSERVER_Memory_Type* memory_type);
-
-/// Get the memory type id of a shared memory block object.
-/// \param shared_memory_block The object whose memory type is required.
-/// \param memory_type_id The device ID if the region is in GPU shared memory.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_Error* TRTSERVER_SharedMemoryBlockMemoryTypeId(
-    TRTSERVER_SharedMemoryBlock* shared_memory_block, int64_t* memory_type_id);
 
 /// TRTSERVER_ResponseAllocator
 ///
@@ -498,6 +437,17 @@ TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceRequestOptionsNew(
 TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceRequestOptionsSetId(
     TRTSERVER_InferenceRequestOptions* request_options, uint64_t id);
 
+#ifdef TRTIS_ENABLE_GRPC_V2
+/// Set the ID for the request in a request options. The response of the request
+/// will contain the same ID. The request sender can use the ID to correlate
+/// the response to corresponding request if needed. The default value is 0.
+/// \param request_options The request options object.
+/// \param id The ID.
+/// \return a TRTSERVER_Error indicating success or failure.
+TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceRequestOptionsSetIdStr(
+    TRTSERVER_InferenceRequestOptions* request_options, const char* id);
+#endif  // TRTIS_ENABLE_GRPC_V2
+
 /// Set the flag associated with the request in a request options. 'flags'
 /// should holds a bitwise-or of all flag values, see
 /// TRTSERVER_Request_Options_Flag for available flags.
@@ -526,6 +476,21 @@ TRTSERVER_InferenceRequestOptionsSetCorrelationId(
 /// \return a TRTSERVER_Error indicating success or failure.
 TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceRequestOptionsSetBatchSize(
     TRTSERVER_InferenceRequestOptions* request_options, uint32_t batch_size);
+
+/// Set the priority for the request in a request options.
+/// \param request_options The request options object.
+/// \param priority The priority level.
+/// \return a TRTSERVER_Error indicating success or failure.
+TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceRequestOptionsSetPriority(
+    TRTSERVER_InferenceRequestOptions* request_options, uint32_t priority);
+
+/// Set the timeout for the request in a request options, in microseconds.
+/// \param request_options The request options object.
+/// \param timeout_us The timeout, in microseconds.
+/// \return a TRTSERVER_Error indicating success or failure.
+TRTSERVER_EXPORT TRTSERVER_Error*
+TRTSERVER_InferenceRequestOptionsSetTimeoutMicroseconds(
+    TRTSERVER_InferenceRequestOptions* request_options, uint64_t timeout_us);
 
 /// Add a input meta-data associated with the request in a request options.
 /// \param request_options The request options object.
@@ -669,6 +634,15 @@ TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceResponseDelete(
 TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceResponseStatus(
     TRTSERVER_InferenceResponse* response);
 
+#ifdef TRTIS_ENABLE_GRPC_V2
+/// Return the V2 request ID for the response.
+/// \param response The response object.
+/// \param Returns the request ID.
+/// \return a TRTSERVER_Error indicating success or failure.
+TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceResponseIdStr(
+    TRTSERVER_InferenceResponse* response, const char** id);
+#endif  // TRTIS_ENABLE_GRPC_V2
+
 /// Get the response header as a TRTSERVER_Protobuf object. The caller
 /// takes ownership of the object and must call
 /// TRTSERVER_ProtobufDelete to release the object.
@@ -803,6 +777,26 @@ TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerOptionsSetStrictModelConfig(
 TRTSERVER_EXPORT TRTSERVER_Error*
 TRTSERVER_ServerOptionsSetPinnedMemoryPoolByteSize(
     TRTSERVER_ServerOptions* options, uint64_t size);
+
+/// Set the total CUDA memory byte size that the server can allocate on given
+/// GPU device in a server options. This option will not affect the allocation
+/// conducted by the backend frameworks.
+/// \param options The server options object.
+/// \param gpu_device The GPU device to allocate the memory pool.
+/// \param size The CUDA memory pool byte size.
+/// \return a TRTSERVER_Error indicating success or failure.
+TRTSERVER_EXPORT TRTSERVER_Error*
+TRTSERVER_ServerOptionsSetCudaMemoryPoolByteSize(
+    TRTSERVER_ServerOptions* options, int gpu_device, uint64_t size);
+
+/// Set the minimum support CUDA compute capability in a server
+/// options.
+/// \param options The server options object.
+/// \param cc The minimum CUDA compute capability.
+/// \return a TRTSERVER_Error indicating success or failure.
+TRTSERVER_EXPORT TRTSERVER_Error*
+TRTSERVER_ServerOptionsSetMinSupportedComputeCapability(
+    TRTSERVER_ServerOptions* options, double cc);
 
 /// Enable or disable exit-on-error in a server options.
 /// \param options The server options object.
@@ -1035,61 +1029,6 @@ TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerLoadModel(
 /// \return a TRTSERVER_Error indicating success or failure.
 TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerUnloadModel(
     TRTSERVER_Server* server, const char* model_name);
-
-/// Register a shared memory block on the inference server. After a
-/// block is registered, addresses within the block can be used for
-/// input and output tensors in inference requests. If a shared memory
-/// block with the same name is already registered
-/// TRTSERVER_ERROR_ALREADY_EXISTS is returned.
-/// \param server The inference server object.
-/// \param shared_memory_block The shared memory block to register.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerRegisterSharedMemory(
-    TRTSERVER_Server* server, TRTSERVER_SharedMemoryBlock* shared_memory_block);
-
-/// Unregister a shared memory block on the inference server. No
-/// operation is performed if the shared memory block is not
-/// registered.
-/// \param server The inference server object.
-/// \param shared_memory_block The shared memory block to unregister.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerUnregisterSharedMemory(
-    TRTSERVER_Server* server, TRTSERVER_SharedMemoryBlock* shared_memory_block);
-
-/// Unregister all shared memory blocks that are currently registered
-/// \param server The inference server object.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerUnregisterAllSharedMemory(
-    TRTSERVER_Server* server);
-
-/// Get an address in a shared memory block that has been registered
-/// with the inference server. Verify that a 'byte_size' block of
-/// memory starting at that address is completely contained within the
-/// shared memory block.
-
-/// \param server The inference server object.
-/// \param shared_memory_block The shared memory block.
-/// \param offset The offset within the shared memory block to get the
-/// address for.
-/// \param byte_size The size of block to within the shared memory
-/// block. Returns error if a block of this size (starting at
-/// 'offset') isn't completely contained in the shared memory block.
-/// \param base Returns the base address.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerSharedMemoryAddress(
-    TRTSERVER_Server* server, TRTSERVER_SharedMemoryBlock* shared_memory_block,
-    size_t offset, size_t byte_size, void** base);
-
-/// Get the list of all active shared memory region on the inference server.
-/// If there are none then the list is empty. Returned error indicates if it
-/// was able to successfully get all active shared memory regions or not.
-/// \param server The inference server object.
-/// \param status Get the current shared memory region status of the inference
-/// server. The caller takes ownership of 'status' and must call
-/// TRTSERVER_ProtobufDelete to release the object.
-/// \return a TRTSERVER_Error indicating success or failure.
-TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerSharedMemoryStatus(
-    TRTSERVER_Server* server, TRTSERVER_Protobuf** status);
 
 /// Get the current metrics for the server. The caller takes ownership
 /// of the metrics object and must call TRTSERVER_MetricsDelete to

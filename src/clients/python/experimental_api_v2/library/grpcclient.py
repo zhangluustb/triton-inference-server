@@ -24,14 +24,15 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import grpc
-from google.protobuf.json_format import MessageToJson
-import rapidjson as json
+import base64
 import numpy as np
+import grpc
+import rapidjson as json
+from google.protobuf.json_format import MessageToJson
 
-from tensorrtserverV2.api import grpc_service_v2_pb2
-from tensorrtserverV2.api import grpc_service_v2_pb2_grpc
-from tensorrtserverV2.common import *
+from tritongrpcclient import grpc_service_v2_pb2
+from tritongrpcclient import grpc_service_v2_pb2_grpc
+from tritongrpcclient.utils import *
 
 
 def raise_error_grpc(rpc_error):
@@ -99,9 +100,9 @@ class InferenceServerClient:
 
         """
         try:
-            self._request = grpc_service_v2_pb2.ServerLiveRequest()
-            self._response = self._client_stub.ServerLive(self._request)
-            return self._response.live
+            request = grpc_service_v2_pb2.ServerLiveRequest()
+            response = self._client_stub.ServerLive(request)
+            return response.live
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
@@ -120,13 +121,13 @@ class InferenceServerClient:
 
         """
         try:
-            self._request = grpc_service_v2_pb2.ServerReadyRequest()
-            self._response = self._client_stub.ServerReady(self._request)
-            return self._response.ready
+            request = grpc_service_v2_pb2.ServerReadyRequest()
+            response = self._client_stub.ServerReady(request)
+            return response.ready
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
-    def is_model_ready(self, model_name, model_version=-1):
+    def is_model_ready(self, model_name, model_version=""):
         """Contact the inference server and get the readiness of specified model.
 
         Parameters
@@ -134,14 +135,15 @@ class InferenceServerClient:
         model_name: str
             The name of the model to check for readiness.
 
-        model_version: int
-            The version of the model to check for readiness. If -1 is given the 
-            server will choose a version based on the model and internal policy.
+        model_version: str
+            The version of the model to check for readiness. The default value
+            is an empty string which means then the server will choose a version
+            based on the model and internal policy.
 
         Returns
         -------
         bool
-            True if the model is ready, false if not ready.
+            True if the model is ready, False if not ready.
 
         Raises
         ------
@@ -150,10 +152,10 @@ class InferenceServerClient:
 
         """
         try:
-            self._request = grpc_service_v2_pb2.ModelReadyRequest(
+            request = grpc_service_v2_pb2.ModelReadyRequest(
                 name=model_name, version=model_version)
-            self._response = self._client_stub.ModelReady(self._request)
-            return self._response.ready
+            response = self._client_stub.ModelReady(request)
+            return response.ready
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
@@ -163,7 +165,7 @@ class InferenceServerClient:
         Parameters
         ----------
         as_json : bool
-            If true then returns server metadata as a json dict,
+            If True then returns server metadata as a json dict,
             otherwise as a protobuf message. Default value is False.
 
         Returns
@@ -179,27 +181,28 @@ class InferenceServerClient:
 
         """
         try:
-            self._request = grpc_service_v2_pb2.ServerMetadataRequest()
-            self._response = self._client_stub.ServerMetadata(self._request)
+            request = grpc_service_v2_pb2.ServerMetadataRequest()
+            response = self._client_stub.ServerMetadata(request)
             if as_json:
-                return json.loads(MessageToJson(self._response))
+                return json.loads(MessageToJson(response))
             else:
-                return self._response
+                return response
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
-    def get_model_metadata(self, model_name, model_version=-1, as_json=False):
+    def get_model_metadata(self, model_name, model_version="", as_json=False):
         """Contact the inference server and get the metadata for specified model.
 
         Parameters
         ----------
         model_name: str
             The name of the model
-        model_version: int
-            The version of the model to get metadata. If -1 is given the 
-            server will choose a version based on the model and internal policy.
+        model_version: str
+            The version of the model to get metadata. The default value
+            is an empty string which means then the server will choose
+            a version based on the model and internal policy.
         as_json : bool
-            If true then returns model metadata as a json dict, otherwise
+            If True then returns model metadata as a json dict, otherwise
             as a protobuf message. Default value is False.
 
         Returns
@@ -215,28 +218,29 @@ class InferenceServerClient:
 
         """
         try:
-            self._request = grpc_service_v2_pb2.ModelMetadataRequest(
+            request = grpc_service_v2_pb2.ModelMetadataRequest(
                 name=model_name, version=model_version)
-            self._response = self._client_stub.ModelMetadata(self._request)
+            response = self._client_stub.ModelMetadata(request)
             if as_json:
-                return json.loads(MessageToJson(self._response))
+                return json.loads(MessageToJson(response))
             else:
-                return self._response
+                return response
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
-    def get_model_config(self, model_name, model_version=-1, as_json=False):
+    def get_model_config(self, model_name, model_version="", as_json=False):
         """Contact the inference server and get the configuration for specified model.
 
         Parameters
         ----------
         model_name: str
             The name of the model
-        model_version: int
-            The version of the model to get configuration. If -1 is given the 
-            server will choose a version based on the model and internal policy.
+        model_version: str
+            The version of the model to get configuration. The default value
+            is an empty string which means then the server will choose
+            a version based on the model and internal policy.
         as_json : bool
-            If true then returns configuration as a json dict, otherwise
+            If True then returns configuration as a json dict, otherwise
             as a protobuf message. Default value is False.
 
         Returns
@@ -252,17 +256,43 @@ class InferenceServerClient:
 
         """
         try:
-            self._request = grpc_service_v2_pb2.ModelConfigRequest(
+            request = grpc_service_v2_pb2.ModelConfigRequest(
                 name=model_name, version=model_version)
-            self._response = self._client_stub.ModelConfig(self._request)
+            response = self._client_stub.ModelConfig(request)
             if as_json:
-                return json.loads(MessageToJson(self._response))
+                return json.loads(MessageToJson(response))
             else:
-                return self._response
+                return response
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
-    # FIXMEPV2: Add model control support
+    def get_model_repository_index(self, as_json=False):
+        """Get the index of model repository contents
+
+        Parameters
+        ----------
+        as_json : bool
+            If True then returns model repository index
+            as a json dict, otherwise as a protobuf message.
+            Default value is False.
+
+        Returns
+        -------
+        dict or protobuf message 
+            The JSON dict or RepositoryIndexResponse message holding
+            the model repository index.
+
+        """
+        try:
+            request = grpc_service_v2_pb2.RepositoryIndexRequest()
+            response = self._client_stub.RepositoryIndex(request)
+            if as_json:
+                return json.loads(MessageToJson(response))
+            else:
+                return response
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
     def load_model(self, model_name):
         """Request the inference server to load or reload specified model.
 
@@ -277,9 +307,13 @@ class InferenceServerClient:
             If unable to load the model.
 
         """
-        raise_error("Not implemented yet")
+        try:
+            request = grpc_service_v2_pb2.RepositoryModelLoadRequest(
+                model_name=model_name)
+            self._client_stub.RepositoryModelLoad(request)
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
 
-    # FIXMEPV2: Add model control support
     def unload_model(self, model_name):
         """Request the inference server to unload specified model.
 
@@ -294,10 +328,201 @@ class InferenceServerClient:
             If unable to unload the model.
 
         """
-        raise_error("Not implemented yet")
+        try:
+            request = grpc_service_v2_pb2.RepositoryModelUnloadRequest(
+                model_name=model_name)
+            self._client_stub.RepositoryModelUnload(request)
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
+    def get_system_shared_memory_status(self, region_name="", as_json=False):
+        """Request system shared memory status from the server.
+
+        Parameters
+        ----------
+        region_name : str
+            The name of the region to query status. The default
+            value is an empty string, which means that the status
+            of all active system shared memory will be returned.
+        as_json : bool
+            If True then returns system shared memory status as a 
+            json dict, otherwise as a protobuf message. Default
+            value is False.
+
+        Returns
+        -------
+        dict or protobuf message 
+            The JSON dict or SystemSharedMemoryStatusResponse message holding
+            the metadata.
+
+        Raises
+        ------
+        InferenceServerException
+            If unable to get the status of specified shared memory.
+
+        """
+
+        try:
+            request = grpc_service_v2_pb2.SystemSharedMemoryStatusRequest(
+                name=region_name)
+            response = self._client_stub.SystemSharedMemoryStatus(request)
+            if as_json:
+                return json.loads(MessageToJson(response))
+            else:
+                return response
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
+    def register_system_shared_memory(self, name, key, byte_size, offset=0):
+        """Request the server to register a system shared memory with the
+        following specification.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region to register.
+        key : str 
+            The key of the underlying memory object that contains the
+            system shared memory region.
+        byte_size : int
+            The size of the system shared memory region, in bytes.
+        offset : int
+            Offset, in bytes, within the underlying memory object to
+            the start of the system shared memory region. The default
+            value is zero.
+
+        Raises
+        ------
+        InferenceServerException
+            If unable to register the specified system shared memory.     
+
+        """
+        try:
+            request = grpc_service_v2_pb2.SystemSharedMemoryRegisterRequest(
+                name=name, key=key, offset=offset, byte_size=byte_size)
+            self._client_stub.SystemSharedMemoryRegister(request)
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
+    def unregister_system_shared_memory(self, name=""):
+        """Request the server to unregister a system shared memory with the
+        specified name.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region to unregister. The default value is empty
+            string which means all the system shared memory regions will be
+            unregistered.
+        
+        Raises
+        ------
+        InferenceServerException
+            If unable to unregister the specified system shared memory region.
+
+        """
+        try:
+            request = grpc_service_v2_pb2.SystemSharedMemoryUnregisterRequest(
+                name=name)
+            self._client_stub.SystemSharedMemoryUnregister(request)
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
+    def get_cuda_shared_memory_status(self, region_name="", as_json=False):
+        """Request cuda shared memory status from the server.
+
+        Parameters
+        ----------
+        region_name : str
+            The name of the region to query status. The default
+            value is an empty string, which means that the status
+            of all active cuda shared memory will be returned.
+        as_json : bool
+            If True then returns cuda shared memory status as a 
+            json dict, otherwise as a protobuf message. Default
+            value is False.
+
+        Returns
+        -------
+        dict or protobuf message 
+            The JSON dict or CudaSharedMemoryStatusResponse message holding
+            the metadata.
+
+        Raises
+        ------
+        InferenceServerException
+            If unable to get the status of specified shared memory.
+
+        """
+
+        try:
+            request = grpc_service_v2_pb2.CudaSharedMemoryStatusRequest(
+                name=region_name)
+            response = self._client_stub.CudaSharedMemoryStatus(request)
+            if as_json:
+                return json.loads(MessageToJson(response))
+            else:
+                return response
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
+    def register_cuda_shared_memory(self, name, raw_handle, device_id,
+                                    byte_size):
+        """Request the server to register a system shared memory with the
+        following specification.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region to register.
+        raw_handle : bytes 
+            The raw serialized cudaIPC handle in base64 encoding.
+        device_id : int
+            The GPU device ID on which the cudaIPC handle was created.
+        byte_size : int
+            The size of the cuda shared memory region, in bytes.
+
+        Raises
+        ------
+        InferenceServerException
+            If unable to register the specified cuda shared memory.     
+
+        """
+        try:
+            request = grpc_service_v2_pb2.CudaSharedMemoryRegisterRequest(
+                name=name,
+                raw_handle=base64.b64decode(raw_handle),
+                device_id=device_id,
+                byte_size=byte_size)
+            self._client_stub.CudaSharedMemoryRegister(request)
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
+
+    def unregister_cuda_shared_memory(self, name=""):
+        """Request the server to unregister a cuda shared memory with the
+        specified name.
+
+        Parameters
+        ----------
+        name : str
+            The name of the region to unregister. The default value is empty
+            string which means all the cuda shared memory regions will be
+            unregistered.
+        
+        Raises
+        ------
+        InferenceServerException
+            If unable to unregister the specified cuda shared memory region.
+
+        """
+        try:
+            request = grpc_service_v2_pb2.CudaSharedMemoryUnregisterRequest(
+                name=name)
+            self._client_stub.CudaSharedMemoryUnregister(request)
+        except grpc.RpcError as rpc_error:
+            raise_error_grpc(rpc_error)
 
     # FIXMEPV2: Add parameter support
-    @property
     def parameters(self):
         raise_error("Not implemented yet")
 
@@ -305,9 +530,8 @@ class InferenceServerClient:
               inputs,
               outputs,
               model_name,
-              model_version=-1,
-              request_id=None,
-              sequence_id=0):
+              model_version="",
+              request_id=None):
         """Run synchronous inference using the supplied 'inputs' requesting
         the outputs specified by 'outputs'.
 
@@ -322,18 +546,14 @@ class InferenceServerClient:
             list will be requested from the server.
         model_name: str
             The name of the model to run inference.
-        model_version: int
-            The version of the model to run inference. If -1 is given the 
-            server will choose a version based on the model and internal policy.
-        request_id: string
+        model_version: str
+            The version of the model to run inference. The default value
+            is an empty string which means then the server will choose
+            a version based on the model and internal policy.
+        request_id: str
             Optional identifier for the request. If specified will be returned
             in the response. Default value is 'None' which means no request_id
             will be used.
-        sequence_id : int
-            The sequence ID of the inference request. Default is 0, which
-            indicates that the request is not part of a sequence. The
-            sequence ID is used to indicate that two or more inference
-            requests are in the same sequence.
 
         Returns
         -------
@@ -347,13 +567,13 @@ class InferenceServerClient:
             If server fails to perform inference.
         """
 
-        self._get_inference_request(inputs, outputs, model_name, model_version,
-                                    request_id, sequence_id)
+        request = self._get_inference_request(inputs, outputs, model_name,
+                                              model_version, request_id)
 
         try:
-            self._response = self._client_stub.ModelInfer(self._request)
-            self._result = InferResult(self._response)
-            return self._result
+            response = self._client_stub.ModelInfer(request)
+            result = InferResult(response)
+            return result
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
@@ -362,9 +582,8 @@ class InferenceServerClient:
                     inputs,
                     outputs,
                     model_name,
-                    model_version=-1,
-                    request_id=None,
-                    sequence_id=None):
+                    model_version="",
+                    request_id=None):
         """Run asynchronous inference using the supplied 'inputs' requesting
         the outputs specified by 'outputs'.
 
@@ -386,18 +605,14 @@ class InferenceServerClient:
             list will be requested from the server.
         model_name: str
             The name of the model to run inference.
-        model_version: int
-            The version of the model to run inference. If -1 is given the 
-            server will choose a version based on the model and internal policy.
-        request_id: string
+        model_version: str
+            The version of the model to run inference. The default value
+            is an empty string which means then the server will choose
+            a version based on the model and internal policy.
+        request_id: str
             Optional identifier for the request. If specified will be returned
             in the response. Default value is 'None' which means no request_id
             will be used.
-        sequence_id : int
-            The sequence ID of the inference request. Default is 0, which
-            indicates that the request is not part of a sequence. The
-            sequence ID is used to indicate that two or more inference
-            requests are in the same sequence.
     
         Raises
         ------
@@ -412,18 +627,17 @@ class InferenceServerClient:
                 raise_error_grpc(rpc_error)
             callback(result=result)
 
-        self._get_inference_request(inputs, outputs, model_name, model_version,
-                                    request_id, sequence_id)
+        request = self._get_inference_request(inputs, outputs, model_name,
+                                              model_version, request_id)
 
         try:
-            self._call_future = self._client_stub.ModelInfer.future(
-                self._request)
+            self._call_future = self._client_stub.ModelInfer.future(request)
             self._call_future.add_done_callback(wrapped_callback)
         except grpc.RpcError as rpc_error:
             raise_error_grpc(rpc_error)
 
     def _get_inference_request(self, inputs, outputs, model_name, model_version,
-                               request_id, sequence_id):
+                               request_id):
         """Creates and initializes an inference request.
 
         Parameters
@@ -437,31 +651,33 @@ class InferenceServerClient:
             list will be requested from the server.
         model_name: str
             The name of the model to run inference.
-        model_version: int
-            The version of the model to run inference. If -1 is given the 
-            server will choose a version based on the model and internal policy.
-        request_id: string
+        model_version: str
+            The version of the model to run inference. The default value
+            is an empty string which means then the server will choose
+            a version based on the model and internal policy.
+        request_id: str
             Optional identifier for the request. If specified will be returned
             in the response. Default value is 'None' which means no request_id
             will be used.
-        sequence_id : int
-            The sequence ID of the inference request. Default is 0, which
-            indicates that the request is not part of a sequence. The
-            sequence ID is used to indicate that two or more inference
-            requests are in the same sequence.
+
+        Returns
+        -------
+        ModelInferRequest
+            The protobuf message holding the inference request.
+
         """
 
-        self._request = grpc_service_v2_pb2.ModelInferRequest()
-        self._request.model_name = model_name
-        self._request.model_version = model_version
+        request = grpc_service_v2_pb2.ModelInferRequest()
+        request.model_name = model_name
+        request.model_version = model_version
         if request_id != None:
-            self._request.id = request_id
-        if sequence_id != None:
-            self._request.sequence_id = sequence_id
+            request.id = request_id
         for infer_input in inputs:
-            self._request.inputs.extend([infer_input._get_tensor()])
+            request.inputs.extend([infer_input._get_tensor()])
         for infer_output in outputs:
-            self._request.outputs.extend([infer_output._get_tensor()])
+            request.outputs.extend([infer_output._get_tensor()])
+
+        return request
 
 
 class InferInput:
@@ -479,7 +695,6 @@ class InferInput:
         self._input = grpc_service_v2_pb2.ModelInferRequest().InferInputTensor()
         self._input.name = name
 
-    @property
     def name(self):
         """Get the name of input associated with this object.
 
@@ -501,40 +716,91 @@ class InferInput:
         """
         return self._input.datatype
 
+    @datatype.setter
+    def datatype(self, value):
+        """Sets the datatype for the input associated with this
+        object
+
+        Parameters
+        ----------
+        value : str
+            The datatype of input
+        """
+        self._input.datatype = value
+
     @property
     def shape(self):
         """Get the shape of input associated with this object.
 
         Returns
         -------
-        str
+        list
             The shape of input
         """
         return self._input.shape
 
-    def set_data_from_numpy(self, numpy_array):
-        """Set the tensor data (datatype, shape, contents) for
-        input associated with this object.
+    @shape.setter
+    def shape(self, value):
+        """Sets the shape of input associated with this object.
 
         Parameters
         ----------
-        numpy_array : numpy array
+        value : list
+            The shape of input
+        """
+        self._input.ClearField('shape')
+        self._input.shape.extend(value)
+
+    def set_data_from_numpy(self, input_tensor):
+        """Set the tensor data (datatype, shape, contents) from the
+        specified numpy array for input associated with this object.
+
+        Parameters
+        ----------
+        input_tensor : numpy array
             The tensor data in numpy array format
         """
-        self._input.datatype = np_to_trtis_dtype(numpy_array.dtype)
-        self._input.shape.extend(numpy_array.shape)
-        self._input.contents.raw_contents = numpy_array.tobytes()
+        if not isinstance(input_tensor, (np.ndarray,)):
+            raise_error("input_tensor must be a numpy array")
+        self._input.datatype = np_to_triton_dtype(input_tensor.dtype)
+        self._input.ClearField('shape')
+        self._input.shape.extend(input_tensor.shape)
+        if self._input.datatype == "BYTES":
+            self._input.contents.raw_contents = serialize_byte_tensor(
+                input_tensor).tobytes()
+        else:
+            self._input.contents.raw_contents = input_tensor.tobytes()
 
-    # FIXMEPV2: Add parameter support
-    @property
-    def parameters(self):
-        raise_error("Not implemented yet")
+    def set_parameter(self, key, value):
+        """Adds the specified key-value pair in the requested input parameters
+
+        Parameters
+        ----------
+        key : str
+            The name of the parameter to be included in the request. 
+        value : str/int/bool
+            The value of the parameter
+        
+        """
+        if not type(key) is str:
+            raise_error(
+                "only string data type for key is supported in parameters")
+
+        param = self._input.parameters[key]
+        if type(value) is int:
+            param.int64_param = value
+        elif type(value) is bool:
+            param.bool_param = value
+        elif type(value) is str:
+            param.string_param = value
+        else:
+            raise_error("unsupported value type for the parameter")
 
     def _get_tensor(self):
         """Retrieve the underlying InferInputTensor message.
         Returns
         -------
-        Protobuf Message 
+        protobuf message 
             The underlying InferInputTensor protobuf message.
         """
         return self._input
@@ -548,23 +814,13 @@ class InferOutput:
     ----------
     name : str
         The name of output tensor to associate with this object
-        
-    data_format : str
-        The format to use when returning the ouput tensor data. Options
-        are "explicit", "binary" and "shared_memory".
-        Default is "binary". If "shared_memory" is specified then
-        the "shared_memory_data" field must also be specified.
-        Server support for “binary” and “shared_memory”
-        is optional.
     """
 
-    def __init__(self, name, data_format="binary"):
+    def __init__(self, name):
         self._output = grpc_service_v2_pb2.ModelInferRequest(
         ).InferRequestedOutputTensor()
         self._output.name = name
-        self._output.data_format = data_format
 
-    @property
     def name(self):
         """Get the name of output associated with this object.
 
@@ -575,38 +831,36 @@ class InferOutput:
         """
         return self._output.name
 
-    @property
-    def data_format(self):
-        """Get the requested format of ouput associated with this object.
+    def set_parameter(self, key, value):
+        """Adds the specified key-value pair in the requested output parameters
 
-        Returns
-        -------
-        str
-            The data format in which output will be requested
+        Parameters
+        ----------
+        key : str
+            The name of the parameter to be included in the request. 
+        value : str/int/bool
+            The value of the parameter
+        
         """
-        return self._output.data_format
+        if not type(key) is str:
+            raise_error(
+                "only string data type for key is supported in parameters")
 
-    @data_format.setter
-    def data_format(self, data_format):
-        """Set the requested format of ouput associated with this object.
-
-        Parameter
-        ---------
-        data_format : str
-            The data format in which output will be requested.
-        """
-        self._output.data_format = data_format
-
-    # FIXMEPV2: Add parameter support
-    @property
-    def parameters(self):
-        raise_error("Not implemented yet")
+        param = self._output.parameters[key]
+        if type(value) is int:
+            param.int64_param = value
+        elif type(value) is bool:
+            param.bool_param = value
+        elif type(value) is str:
+            param.string_param = value
+        else:
+            raise_error("unsupported value type for the parameter")
 
     def _get_tensor(self):
         """Retrieve the underlying InferRequestedOutputTensor message.
         Returns
         -------
-        Protobuf Message 
+        protobuf message 
             The underlying InferRequestedOutputTensor protobuf message.
         """
         return self._output
@@ -619,7 +873,7 @@ class InferResult:
 
     Parameters
     ----------
-    result : Protobuf Message
+    result : protobuf message
         The ModelInferResponse returned by the server
     """
 
@@ -627,12 +881,12 @@ class InferResult:
         self._result = result
 
     def as_numpy(self, name):
-        """Get the output tensor data (datatype, shape, contents) for
-        output associated with this object in numpy format
+        """Get the tensor data for output associated with this object
+        in numpy format
 
         Parameters
         ----------
-        name : string
+        name : str
             The name of the output tensor whose result is to be retrieved.
     
         Returns
@@ -641,43 +895,30 @@ class InferResult:
             The numpy array containing the response data for the tensor or
             None if the data for specified tensor name is not found.
         """
-        for self._output in self._result.outputs:
-            if self._output.name == name:
-                self._shape = []
-                for self._value in self._output.shape:
-                    self._shape.append(self._value)
-                # FIXMEPV2 datatype is not yet provided by the server
-                # yet. hard-coding to INT32
-                # self._np_array = np.frombuffer(
-                #   self._output.contents.raw_contents,
-                #   dtype=trtis_to_np_dtype(self._output.datatype))
-                self._np_array = np.frombuffer(
-                    self._output.contents.raw_contents,
-                    dtype=trtis_to_np_dtype('INT32'))
-                self._np_array = np.resize(self._np_array, self._shape)
-                return self._np_array
+        for output in self._result.outputs:
+            if output.name == name:
+                shape = []
+                for value in output.shape:
+                    shape.append(value)
+
+                datatype = output.datatype
+                if len(output.contents.raw_contents) != 0:
+                    if datatype == 'BYTES':
+                        # String results contain a 4-byte string length
+                        # followed by the actual string characters. Hence,
+                        # need to decode the raw bytes to convert into
+                        # array elements.
+                        np_array = deserialize_bytes_tensor(
+                            output.contents.raw_contents)
+                    else:
+                        np_array = np.frombuffer(
+                            output.contents.raw_contents,
+                            dtype=triton_to_np_dtype(datatype))
+                elif len(output.contents.byte_contents) != 0:
+                    np_array = np.array(output.contents.byte_contents)
+                np_array = np.resize(np_array, shape)
+                return np_array
         return None
-
-    def get_request(self, as_json=False):
-        """Retrieves the ModelInferRequest for the request associated
-        with this response as a json dict object or protobuf message
-
-        Parameters
-        ----------
-        as_json : bool
-            If true then returns request as a json dict, otherwise
-            as a protobuf message. Default value is False.
-
-        Returns
-        -------
-        Protobuf Message or dict
-            The ModelInferRequest protobuf message or dict for the request
-            associated  with this response.
-        """
-        if as_json:
-            return json.loads(MessageToJson(self._result.request))
-        else:
-            return self._result.request
 
     def get_statistics(self, as_json=False):
         """Retrieves the InferStatistics for this response as
@@ -686,12 +927,12 @@ class InferResult:
         Parameters
         ----------
         as_json : bool
-            If true then returns statistics as a json dict, otherwise
+            If True then returns statistics as a json dict, otherwise
             as a protobuf message. Default value is False.
         
         Returns
         -------
-        Protobuf Message or dict
+        protobuf message or dict
             The InferStatistics protobuf message or dict for this response.
         """
         if as_json:
@@ -706,12 +947,12 @@ class InferResult:
         Parameters
         ----------
         as_json : bool
-            If true then returns response as a json dict, otherwise
+            If True then returns response as a json dict, otherwise
             as a protobuf message. Default value is False.
     
         Returns
         -------
-        Protobuf Message or dict
+        protobuf message or dict
             The underlying ModelInferResponse as a protobuf message or dict.
         """
         if as_json:

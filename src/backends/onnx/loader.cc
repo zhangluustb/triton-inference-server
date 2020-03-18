@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -29,6 +29,9 @@
 #include <future>
 #include <thread>
 #include "src/backends/onnx/onnx_utils.h"
+#include "src/core/constants.h"
+#include "src/core/filesystem.h"
+#include "src/core/logging.h"
 
 namespace nvidia { namespace inferenceserver {
 
@@ -48,8 +51,15 @@ OnnxLoader::Init()
     OrtEnv* env;
     // If needed, provide custom logger with
     // ort_api->CreateEnvWithCustomLogger()
-    OrtStatus* status =
-        ort_api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "log", &env);
+    OrtStatus* status;
+    if (LOG_VERBOSE_IS_ON(2)) {
+      status = ort_api->CreateEnv(ORT_LOGGING_LEVEL_VERBOSE, "log", &env);
+    } else if (LOG_VERBOSE_IS_ON(1)) {
+      status = ort_api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "log", &env);
+    } else {
+      status = ort_api->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "log", &env);
+    }
+
     loader = new OnnxLoader(env);
     RETURN_IF_ORT_ERROR(status);
   } else {
@@ -90,8 +100,8 @@ OnnxLoader::Stop()
 
 Status
 OnnxLoader::LoadSession(
-    const std::string& model_data, const OrtSessionOptions* session_options,
-    OrtSession** session)
+    const std::pair<bool, std::string>& model_data,
+    const OrtSessionOptions* session_options, OrtSession** session)
 {
   if (loader != nullptr) {
     {
@@ -104,9 +114,17 @@ OnnxLoader::LoadSession(
       }
     }
 
-    OrtStatus* status = ort_api->CreateSessionFromArray(
-        loader->env_, model_data.c_str(), model_data.size(), session_options,
-        session);
+    OrtStatus* status = nullptr;
+    if (model_data.first) {
+      status = ort_api->CreateSessionFromArray(
+          loader->env_, model_data.second.c_str(), model_data.second.size(),
+          session_options, session);
+    } else {
+      std::string path =
+          JoinPath({model_data.second, kOnnxRuntimeOnnxFilename});
+      status = ort_api->CreateSession(
+          loader->env_, path.c_str(), session_options, session);
+    }
 
     if (status != nullptr) {
       TryRelease(true);

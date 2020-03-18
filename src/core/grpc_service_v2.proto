@@ -87,6 +87,103 @@ service GRPCInferenceService
   //@@     Get model configuration.
   //@@
   rpc ModelConfig(ModelConfigRequest) returns (ModelConfigResponse) {}
+
+  //@@  .. cpp:var:: rpc RepositoryIndex(RepositoryIndexRequest) returns
+  //@@       (RepositoryIndexResponse)
+  //@@
+  //@@     Get the index of model repository contents.
+  //@@
+  rpc RepositoryIndex(RepositoryIndexRequest) returns (RepositoryIndexResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc RepositoryModelLoad(RepositoryModelLoadRequest) returns
+  //@@       (RepositoryModelLoadResponse)
+  //@@
+  //@@     Load or reload a model from a repository.
+  //@@
+  rpc RepositoryModelLoad(RepositoryModelLoadRequest)
+      returns (RepositoryModelLoadResponse)
+  {
+  }
+
+
+  //@@  .. cpp:var:: rpc RepositoryModelUnload(RepositoryModelUnloadRequest)
+  // returns
+  //@@       (RepositoryModelUnloadResponse)
+  //@@
+  //@@     Unload a model.
+  //@@
+  rpc RepositoryModelUnload(RepositoryModelUnloadRequest)
+      returns (RepositoryModelUnloadResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc SystemSharedMemoryStatus(
+  //@@                     SystemSharedMemoryStatusRequest)
+  //@@                   returns (SystemSharedMemoryStatusRespose)
+  //@@
+  //@@     Get the status of all registered system-shared-memory regions.
+  //@@
+  rpc SystemSharedMemoryStatus(SystemSharedMemoryStatusRequest)
+      returns (SystemSharedMemoryStatusResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc SystemSharedMemoryRegister(
+  //@@                     SystemSharedMemoryRegisterRequest)
+  //@@                   returns (SystemSharedMemoryRegisterResponse)
+  //@@
+  //@@     Register a system-shared-memory region.
+  //@@
+  rpc SystemSharedMemoryRegister(SystemSharedMemoryRegisterRequest)
+      returns (SystemSharedMemoryRegisterResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc SystemSharedMemoryUnregister(
+  //@@                     SystemSharedMemoryUnregisterRequest)
+  //@@                   returns (SystemSharedMemoryUnregisterResponse)
+  //@@
+  //@@     Unregister a system-shared-memory region.
+  //@@
+  rpc SystemSharedMemoryUnregister(SystemSharedMemoryUnregisterRequest)
+      returns (SystemSharedMemoryUnregisterResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc CudaSharedMemoryStatus(
+  //@@                     CudaSharedMemoryStatusRequest)
+  //@@                   returns (CudaSharedMemoryStatusRespose)
+  //@@
+  //@@     Get the status of all registered CUDA-shared-memory regions.
+  //@@
+  rpc CudaSharedMemoryStatus(CudaSharedMemoryStatusRequest)
+      returns (CudaSharedMemoryStatusResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc CudaSharedMemoryRegister(
+  //@@                     CudaSharedMemoryRegisterRequest)
+  //@@                   returns (CudaSharedMemoryRegisterResponse)
+  //@@
+  //@@     Register a CUDA-shared-memory region.
+  //@@
+  rpc CudaSharedMemoryRegister(CudaSharedMemoryRegisterRequest)
+      returns (CudaSharedMemoryRegisterResponse)
+  {
+  }
+
+  //@@  .. cpp:var:: rpc CudaSharedMemoryUnregister(
+  //@@                     CudaSharedMemoryUnregisterRequest)
+  //@@                   returns (CudaSharedMemoryUnregisterResponse)
+  //@@
+  //@@     Unregister a CUDA-shared-memory region.
+  //@@
+  rpc CudaSharedMemoryUnregister(CudaSharedMemoryUnregisterRequest)
+      returns (CudaSharedMemoryUnregisterResponse)
+  {
+  }
 }
 
 //@@
@@ -147,13 +244,12 @@ message ModelReadyRequest
   //@@
   string name = 1;
 
-  //@@  .. cpp:var:: int64 version
+  //@@  .. cpp:var:: string version
   //@@
-  //@@     The version of the model to check for readiness. If -1
-  //@@     the version of the model is selected automatically based
-  //@@     on the version policy.
+  //@@     The version of the model to check for readiness. If not given the
+  //@@     server will choose a version based on the model and internal policy.
   //@@
-  int64 version = 2;
+  string version = 2;
 }
 
 //@@
@@ -221,12 +317,13 @@ message ModelMetadataRequest
   //@@
   string name = 1;
 
-  //@@  .. cpp:var:: int64 version
+  //@@  .. cpp:var:: string version
   //@@
-  //@@     The version of the model. If -1 the version of the model
-  //@@     is selected automatically based on the version policy.
+  //@@     The version of the model to check for readiness. If not
+  //@@     given the server will choose a version based on the
+  //@@     model and internal policy.
   //@@
-  int64 version = 2;
+  string version = 2;
 }
 
 //@@
@@ -274,11 +371,11 @@ message ModelMetadataResponse
   string name = 1;
 
   //@@
-  //@@  .. cpp:var:: int64 versions (repeated)
+  //@@  .. cpp:var:: string versions (repeated)
   //@@
   //@@     The versions of the model.
   //@@
-  repeated int64 versions = 2;
+  repeated string versions = 2;
 
   //@@
   //@@  .. cpp:var:: string platform
@@ -309,42 +406,10 @@ message ModelMetadataResponse
 //@@
 message InferParameter
 {
-  //@@
-  //@@  .. cpp:var:: message ResponseDetail
-  //@@
-  //@@     Value for a "response_detail" parameter.
-  //@@
-  message ResponseDetail
-  {
-    //@@    .. cpp:var:: bool model
-    //@@
-    //@@       Enable model information in response.
-    //@@
-    bool model = 1;
-
-    //@@    .. cpp:var:: bool request
-    //@@
-    //@@       Enable request information in response.
-    //@@
-    bool request = 2;
-
-    //@@    .. cpp:var:: bool statistics
-    //@@
-    //@@       Enable statistics information in response.
-    //@@
-    bool statistics = 3;
-
-    //@@    .. cpp:var:: bool parameters
-    //@@
-    //@@       Enable parameter information in response.
-    //@@
-    bool parameters = 4;
-  }
-
   //@@  .. cpp:var:: oneof parameter_choice
   //@@
-  //@@     The parameter value can be a string, an int64, a boolean
-  //@@     or a message specific to a predefined parameter.
+  //@@     The parameter value can be a string, an int64 or
+  //@@     a boolean
   //@@
   oneof parameter_choice
   {
@@ -360,17 +425,11 @@ message InferParameter
     //@@
     int64 int64_param = 2;
 
-    //@@    .. cpp:var:: bytes string_param
+    //@@    .. cpp:var:: string string_param
     //@@
     //@@       A string parameter value.
     //@@
-    bytes string_param = 3;
-
-    //@@    .. cpp:var:: ResponseDetail response_detail_param
-    //@@
-    //@@       The parameter value for a "response_detail" parameter.
-    //@@
-    ResponseDetail response_detail_param = 4;
+    string string_param = 3;
   }
 }
 
@@ -532,13 +591,13 @@ message InferTensorContents
   repeated double fp64_contents = 8;
 
   //@@
-  //@@  .. cpp:var:: bytes string_contents (repeated)
+  //@@  .. cpp:var:: bytes byte_contents (repeated)
   //@@
-  //@@     Representation for STRING data type. The size must match what is
+  //@@     Representation for BYTES data type. The size must match what is
   //@@     expected by the tensor's shape. The contents must be the flattened,
   //@@     one-dimensional, row-major order of the tensor elements.
   //@@
-  repeated bytes string_contents = 9;
+  repeated bytes byte_contents = 9;
 }
 
 //@@
@@ -608,18 +667,6 @@ message ModelInferRequest
     //@@       Optional requested output tensor parameters.
     //@@
     map<string, InferParameter> parameters = 2;
-
-    //@@
-    //@@    .. cpp:var:: string data_format
-    //@@
-    //@@       Format to use to return the output tensor data. Options
-    //@@       are "explicit", "binary" and "shared_memory".
-    //@@       Default is "binary". If "shared_memory" is specified then
-    //@@       the "shared_memory_data" field must also be specified.
-    //@@       Server support for “binary” and “shared_memory”
-    //@@       is optional.
-    //@@
-    string data_format = 3;
   }
 
   //@@  .. cpp:var:: string model_name
@@ -628,12 +675,12 @@ message ModelInferRequest
   //@@
   string model_name = 1;
 
-  //@@  .. cpp:var:: int64 model_version
+  //@@  .. cpp:var:: string model_version
   //@@
-  //@@     The version of the model to use for inference. If -1
-  //@@     the latest/most-recent version of the model is used.
+  //@@     The version of the model to use for inference. If not
+  //@@     given the latest/most-recent version of the model is used.
   //@@
-  int64 model_version = 2;
+  string model_version = 2;
 
   //@@  .. cpp:var:: string id
   //@@
@@ -661,16 +708,6 @@ message ModelInferRequest
   //@@     The requested output tensors for the inference.
   //@@
   repeated InferRequestedOutputTensor outputs = 6;
-
-  //@@
-  //@@  .. cpp:var:: uin64 sequence_id
-  //@@
-  //@@     The sequence ID of the inference request. Default is 0, which
-  //@@     indicates that the request is not part of a sequence. The
-  //@@     sequence ID is used to indicate that two or more inference
-  //@@     requests are in the same sequence.
-  //@@
-  uint64 sequence_id = 7;
 }
 
 //@@
@@ -715,49 +752,30 @@ message ModelInferResponse
     InferTensorContents contents = 4;
   }
 
-  //@@  .. cpp:var:: string model_name
-  //@@
-  //@@     The name of the model used for inferencing.
-  //@@
-  string model_name = 1;
-
-  //@@  .. cpp:var:: int64 model_version
+  //@@  .. cpp:var:: string model_version
   //@@
   //@@     The version of the model used for inference.
   //@@
-  int64 model_version = 2;
+  string model_version = 1;
 
   //@@  .. cpp:var:: string id
   //@@
   //@@     The id of the inference request if one was specified.
   //@@
-  string id = 3;
+  string id = 2;
 
   //@@  .. cpp:var:: map<string,InferParameter> parameters
   //@@
   //@@     Optional inference response parameters.
   //@@
-  map<string, InferParameter> parameters = 4;
-
-  //@@  .. cpp:var:: ModelInferRequest request
-  //@@
-  //@@     Optionally returns the inference request that produced
-  //@@     this response.
-  //@@
-  ModelInferRequest request = 5;
-
-  //@@  .. cpp:var:: InferStatistics statistics
-  //@@
-  //@@     Optionally returns the inference statistics.
-  //@@
-  InferStatistics statistics = 6;
+  map<string, InferParameter> parameters = 3;
 
   //@@
   //@@  .. cpp:var:: InferOutputTensor outputs (repeated)
   //@@
   //@@     The output tensors holding inference results.
   //@@
-  repeated InferOutputTensor outputs = 7;
+  repeated InferOutputTensor outputs = 4;
 }
 
 //@@
@@ -774,12 +792,12 @@ message ModelConfigRequest
   //@@
   string name = 1;
 
-  //@@  .. cpp:var:: int64 version
+  //@@  .. cpp:var:: string version
   //@@
-  //@@     The version of the model. If -1 the version of the model
+  //@@     The version of the model. If not given the model version
   //@@     is selected automatically based on the version policy.
   //@@
-  int64 version = 2;
+  string version = 2;
 }
 
 //@@
@@ -796,3 +814,358 @@ message ModelConfigResponse
   //@@
   ModelConfig config = 1;
 }
+
+//@@
+//@@.. cpp:var:: message RepositoryIndexRequest
+//@@
+//@@   Request message for RepositoryIndex.
+//@@
+message RepositoryIndexRequest
+{
+  //@@  .. cpp:var:: string repository_name
+  //@@
+  //@@     The name of the repository. If empty the index is returned
+  //@@     for all repositories.
+  //@@
+  string repository_name = 1;
+}
+
+//@@
+//@@.. cpp:var:: message RepositoryIndexResponse
+//@@
+//@@   Response message for RepositoryIndex.
+//@@
+message RepositoryIndexResponse
+{
+  //@@
+  //@@  .. cpp:var:: message ModelIndex
+  //@@
+  //@@     Index entry for a model.
+  //@@
+  message ModelIndex
+  {
+    //@@
+    //@@    .. cpp:var:: string name
+    //@@
+    //@@       The name of the model.
+    //@@
+    string name = 1;
+  }
+
+  //@@
+  //@@  .. cpp:var:: ModelIndex models (repeated)
+  //@@
+  //@@     An index entry for each model.
+  //@@
+  repeated ModelIndex models = 1;
+}
+
+//@@
+//@@.. cpp:var:: message RepositoryModelLoadRequest
+//@@
+//@@   Request message for RepositoryModelLoad.
+//@@
+message RepositoryModelLoadRequest
+{
+  //@@  .. cpp:var:: string repository_name
+  //@@
+  //@@     The name of the repository to load from. If empty the model
+  //@@     is loaded from any repository.
+  //@@
+  string repository_name = 1;
+
+  //@@  .. cpp:var:: string repository_name
+  //@@
+  //@@     The name of the model to load, or reload.
+  //@@
+  string model_name = 2;
+}
+
+//@@
+//@@.. cpp:var:: message RepositoryModelLoadResponse
+//@@
+//@@   Response message for RepositoryModelLoad.
+//@@
+message RepositoryModelLoadResponse {}
+
+//@@
+//@@.. cpp:var:: message RepositoryModelUnloadRequest
+//@@
+//@@   Request message for RepositoryModelUnload.
+//@@
+message RepositoryModelUnloadRequest
+{
+  //@@  .. cpp:var:: string repository_name
+  //@@
+  //@@     The name of the repository from which the model was originally
+  //@@     loaded. If empty the repository is not considered.
+  //@@
+  string repository_name = 1;
+
+  //@@  .. cpp:var:: string repository_name
+  //@@
+  //@@     The name of the model to unload.
+  //@@
+  string model_name = 2;
+}
+
+//@@
+//@@.. cpp:var:: message RepositoryModelUnloadResponse
+//@@
+//@@   Response message for RepositoryModelUnload.
+//@@
+message RepositoryModelUnloadResponse {}
+
+//@@
+//@@.. cpp:var:: message SystemSharedMemoryStatusRequest
+//@@
+//@@   Request message for SystemSharedMemoryStatus.
+//@@
+message SystemSharedMemoryStatusRequest
+{
+  //@@
+  //@@  .. cpp:var:: string name
+  //@@
+  //@@     The name of the region to get status for. If empty the
+  //@@     status is returned for all registered regions.
+  //@@
+  string name = 1;
+}
+
+//@@
+//@@.. cpp:var:: message SystemSharedMemoryStatusResponse
+//@@
+//@@   Response message for SystemSharedMemoryStatus.
+//@@
+message SystemSharedMemoryStatusResponse
+{
+  //@@
+  //@@  .. cpp:var:: message RegionStatus
+  //@@
+  //@@     Status for a shared memory region.
+  //@@
+  message RegionStatus
+  {
+    //@@
+    //@@    .. cpp:var:: string name
+    //@@
+    //@@       The name for the shared memory region.
+    //@@
+    string name = 1;
+
+    //@@    .. cpp:var:: string shared_memory_key
+    //@@
+    //@@       The key of the underlying memory object that contains the
+    //@@       shared memory region.
+    //@@
+    string key = 2;
+
+    //@@    .. cpp:var:: uint64 offset
+    //@@
+    //@@       Offset, in bytes, within the underlying memory object to
+    //@@       the start of the shared memory region.
+    //@@
+    uint64 offset = 3;
+
+    //@@    .. cpp:var:: uint64 byte_size
+    //@@
+    //@@       Size of the shared memory region, in bytes.
+    //@@
+    uint64 byte_size = 4;
+  }
+
+  //@@
+  //@@  .. cpp:var:: map<string,RegionStatus> regions
+  //@@
+  //@@     Status for each of the registered regions, indexed by
+  //@@     region name.
+  //@@
+  map<string, RegionStatus> regions = 1;
+}
+
+//@@
+//@@.. cpp:var:: message SystemSharedMemoryRegisterRequest
+//@@
+//@@   Request message for SystemSharedMemoryRegister.
+//@@
+message SystemSharedMemoryRegisterRequest
+{
+  //@@
+  //@@  .. cpp:var:: string name
+  //@@
+  //@@     The name of the region to register.
+  //@@
+  string name = 1;
+
+  //@@  .. cpp:var:: string shared_memory_key
+  //@@
+  //@@     The key of the underlying memory object that contains the
+  //@@     shared memory region.
+  //@@
+  string key = 2;
+
+  //@@  .. cpp:var:: uint64 offset
+  //@@
+  //@@     Offset, in bytes, within the underlying memory object to
+  //@@     the start of the shared memory region.
+  //@@
+  uint64 offset = 3;
+
+  //@@  .. cpp:var:: uint64 byte_size
+  //@@
+  //@@     Size of the shared memory region, in bytes.
+  //@@
+  uint64 byte_size = 4;
+}
+
+//@@
+//@@.. cpp:var:: message SystemSharedMemoryRegisterResponse
+//@@
+//@@   Response message for SystemSharedMemoryRegister.
+//@@
+message SystemSharedMemoryRegisterResponse {}
+
+//@@
+//@@.. cpp:var:: message SystemSharedMemoryUnregisterRequest
+//@@
+//@@   Request message for SystemSharedMemoryUnregister.
+//@@
+message SystemSharedMemoryUnregisterRequest
+{
+  //@@
+  //@@  .. cpp:var:: string name
+  //@@
+  //@@     The name of the system region to unregister. If empty
+  //@@     all system shared-memory regions are unregistered.
+  //@@
+  string name = 1;
+}
+
+//@@
+//@@.. cpp:var:: message SystemSharedMemoryUnregisterResponse
+//@@
+//@@   Response message for SystemSharedMemoryUnregister.
+//@@
+message SystemSharedMemoryUnregisterResponse {}
+
+//@@
+//@@.. cpp:var:: message CudaSharedMemoryStatusRequest
+//@@
+//@@   Request message for CudaSharedMemoryStatus.
+//@@
+message CudaSharedMemoryStatusRequest
+{
+  //@@
+  //@@  .. cpp:var:: string name
+  //@@
+  //@@     The name of the region to get status for. If empty the
+  //@@     status is returned for all registered regions.
+  //@@
+  string name = 1;
+}
+
+//@@
+//@@.. cpp:var:: message CudaSharedMemoryStatusResponse
+//@@
+//@@   Response message for CudaSharedMemoryStatus.
+//@@
+message CudaSharedMemoryStatusResponse
+{
+  //@@
+  //@@  .. cpp:var:: message RegionStatus
+  //@@
+  //@@     Status for a shared memory region.
+  //@@
+  message RegionStatus
+  {
+    //@@
+    //@@    .. cpp:var:: string name
+    //@@
+    //@@       The name for the shared memory region.
+    //@@
+    string name = 1;
+
+    //@@    .. cpp:var:: uin64 device_id
+    //@@
+    //@@       The GPU device ID where the cudaIPC handle was created.
+    //@@
+    uint64 device_id = 2;
+
+    //@@    .. cpp:var:: uint64 byte_size
+    //@@
+    //@@       Size of the shared memory region, in bytes.
+    //@@
+    uint64 byte_size = 3;
+  }
+
+  //@@
+  //@@  .. cpp:var:: map<string,RegionStatus> regions
+  //@@
+  //@@     Status for each of the registered regions, indexed by
+  //@@     region name.
+  //@@
+  map<string, RegionStatus> regions = 1;
+}
+
+//@@
+//@@.. cpp:var:: message CudaSharedMemoryRegisterRequest
+//@@
+//@@   Request message for CudaSharedMemoryRegister.
+//@@
+message CudaSharedMemoryRegisterRequest
+{
+  //@@
+  //@@  .. cpp:var:: string name
+  //@@
+  //@@     The name of the region to register.
+  //@@
+  string name = 1;
+
+  //@@  .. cpp:var:: bytes raw_handle
+  //@@
+  //@@     The raw serialized cudaIPC handle.
+  //@@
+  bytes raw_handle = 2;
+
+  //@@  .. cpp:var:: int64 device_id
+  //@@
+  //@@     The GPU device ID on which the cudaIPC handle was created.
+  //@@
+  int64 device_id = 3;
+
+  //@@  .. cpp:var:: uint64 byte_size
+  //@@
+  //@@     Size of the shared memory block, in bytes.
+  //@@
+  uint64 byte_size = 4;
+}
+
+//@@
+//@@.. cpp:var:: message CudaSharedMemoryRegisterResponse
+//@@
+//@@   Response message for CudaSharedMemoryRegister.
+//@@
+message CudaSharedMemoryRegisterResponse {}
+
+//@@
+//@@.. cpp:var:: message CudaSharedMemoryUnregisterRequest
+//@@
+//@@   Request message for CudaSharedMemoryUnregister.
+//@@
+message CudaSharedMemoryUnregisterRequest
+{
+  //@@
+  //@@  .. cpp:var:: string name
+  //@@
+  //@@     The name of the cuda region to unregister. If empty
+  //@@     all cuda shared-memory regions are unregistered.
+  //@@
+  string name = 1;
+}
+
+//@@
+//@@.. cpp:var:: message CudaSharedMemoryUnregisterResponse
+//@@
+//@@   Response message for CudaSharedMemoryUnregister.
+//@@
+message CudaSharedMemoryUnregisterResponse {}

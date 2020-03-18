@@ -42,198 +42,26 @@
 namespace nvidia { namespace inferenceserver {
 
 //
-// MemoryReference
-//
-MemoryReference::MemoryReference() : Memory() {}
-
-const char*
-MemoryReference::BufferAt(
-    size_t idx, size_t* byte_size, TRTSERVER_Memory_Type* memory_type,
-    int64_t* memory_type_id) const
-{
-  if (idx >= buffer_.size()) {
-    *byte_size = 0;
-    *memory_type = TRTSERVER_MEMORY_CPU;
-    *memory_type_id = 0;
-    return nullptr;
-  }
-  *memory_type = buffer_[idx].memory_type_;
-  *memory_type_id = buffer_[idx].memory_type_id_;
-  *byte_size = buffer_[idx].byte_size_;
-  return buffer_[idx].buffer_;
-}
-
-size_t
-MemoryReference::AddBuffer(
-    const char* buffer, size_t byte_size, TRTSERVER_Memory_Type memory_type,
-    int64_t memory_type_id)
-{
-  total_byte_size_ += byte_size;
-  buffer_.emplace_back(buffer, byte_size, memory_type, memory_type_id);
-  return buffer_.size() - 1;
-}
-
-MutableMemory::MutableMemory(
-    char* buffer, size_t byte_size, TRTSERVER_Memory_Type memory_type,
-    int64_t memory_type_id)
-    : Memory(), buffer_(buffer), memory_type_(memory_type),
-      memory_type_id_(memory_type_id)
-{
-  total_byte_size_ = byte_size;
-}
-
-const char*
-MutableMemory::BufferAt(
-    size_t idx, size_t* byte_size, TRTSERVER_Memory_Type* memory_type,
-    int64_t* memory_type_id) const
-{
-  if (idx != 0) {
-    *byte_size = 0;
-    *memory_type = TRTSERVER_MEMORY_CPU;
-    *memory_type_id = 0;
-    return nullptr;
-  }
-  *byte_size = total_byte_size_;
-  *memory_type = memory_type_;
-  *memory_type_id = memory_type_id_;
-  return buffer_;
-}
-
-char*
-MutableMemory::MutableBuffer(
-    TRTSERVER_Memory_Type* memory_type, int64_t* memory_type_id)
-{
-  *memory_type = memory_type_;
-  *memory_type_id = memory_type_id_;
-  return buffer_;
-}
-
-AllocatedMemory::AllocatedMemory(
-    size_t byte_size, TRTSERVER_Memory_Type memory_type, int64_t memory_type_id)
-    : MutableMemory(nullptr, byte_size, memory_type, memory_type_id)
-{
-  if (total_byte_size_ != 0) {
-    // If the requested memory type is not GPU, we always attempt to allocated
-    // on pinned memory first
-    switch (memory_type_) {
-      case TRTSERVER_MEMORY_GPU: {
-#ifdef TRTIS_ENABLE_GPU
-        int current_device;
-        auto err = cudaGetDevice(&current_device);
-        bool overridden = false;
-        if (err == cudaSuccess) {
-          overridden = (current_device != memory_type_id_);
-          if (overridden) {
-            err = cudaSetDevice(memory_type_id_);
-          }
-        }
-        if (err == cudaSuccess) {
-          err = cudaMalloc((void**)&buffer_, total_byte_size_);
-        }
-        if (err != cudaSuccess) {
-          LOG_ERROR << "failed to allocate GPU memory with byte size"
-                    << total_byte_size_ << ": "
-                    << std::string(cudaGetErrorString(err));
-          buffer_ = nullptr;
-        }
-        if (overridden) {
-          cudaSetDevice(current_device);
-        }
-#else
-        buffer_ = nullptr;
-#endif  // TRTIS_ENABLE_GPU
-        break;
-      }
-
-      default: {
-        auto status = PinnedMemoryManager::Alloc(
-            (void**)&buffer_, total_byte_size_, &memory_type_, true);
-        if (!status.IsOk()) {
-          LOG_ERROR << status.Message();
-          buffer_ = nullptr;
-        }
-        break;
-      }
-    }
-  }
-  total_byte_size_ = (buffer_ == nullptr) ? 0 : total_byte_size_;
-}
-
-AllocatedMemory::~AllocatedMemory()
-{
-  if (buffer_ != nullptr) {
-    switch (memory_type_) {
-      case TRTSERVER_MEMORY_GPU: {
-#ifdef TRTIS_ENABLE_GPU
-        int current_device;
-        auto err = cudaGetDevice(&current_device);
-        bool overridden = false;
-        if (err == cudaSuccess) {
-          overridden = (current_device != memory_type_id_);
-          if (overridden) {
-            err = cudaSetDevice(memory_type_id_);
-          }
-        }
-        if (err == cudaSuccess) {
-          err = cudaFree(buffer_);
-        }
-        if (err != cudaSuccess) {
-          LOG_ERROR << "failed to free GPU memory at address " << buffer_
-                    << ": " << std::string(cudaGetErrorString(err));
-        }
-        if (overridden) {
-          cudaSetDevice(current_device);
-        }
-#endif  // TRTIS_ENABLE_GPU
-        break;
-      }
-
-      default: {
-        auto status = PinnedMemoryManager::Free(buffer_);
-        if (!status.IsOk()) {
-          LOG_ERROR << status.Message();
-          buffer_ = nullptr;
-        }
-        break;
-      }
-    }
-    buffer_ = nullptr;
-  }
-}
-
-//
 // InferRequestProvider
 //
 Status
 InferRequestProvider::Create(
-    const std::string& model_name, const int64_t model_version,
-    const InferRequestHeader& request_header,
-    const std::unordered_map<std::string, std::shared_ptr<Memory>>&
-        input_buffer,
+    const std::shared_ptr<InferenceRequest>& irequest,
     std::shared_ptr<InferRequestProvider>* provider)
 {
-  provider->reset(new InferRequestProvider(model_name, model_version));
+  provider->reset(new InferRequestProvider(irequest));
 
-  (*provider)->request_header_ = request_header;
-
-  for (const auto& io : request_header.input()) {
-    auto it = input_buffer.find(io.name());
-    if (it == input_buffer.end()) {
+  for (const auto& pr : irequest->Inputs()) {
+    if ((pr.second.BatchByteSize() != 0) &&
+        pr.second.BatchByteSize() != pr.second.Data()->TotalByteSize()) {
       return Status(
           RequestStatusCode::INVALID_ARG,
-          "input '" + io.name() + "' is specified in request header but" +
-              " not found in memory block mapping for model '" +
-              (*provider)->model_name_ + "'");
+          "unexpected size " +
+              std::to_string(pr.second.Data()->TotalByteSize()) +
+              " for input '" + pr.first + "', expecting " +
+              std::to_string(pr.second.BatchByteSize()) + " for model '" +
+              irequest->ModelName() + "'");
     }
-    if (io.batch_byte_size() != it->second->TotalByteSize()) {
-      return Status(
-          RequestStatusCode::INVALID_ARG,
-          "unexpected size " + std::to_string(it->second->TotalByteSize()) +
-              " for input '" + io.name() + "', expecting " +
-              std::to_string(io.batch_byte_size()) + " for model '" +
-              (*provider)->model_name_ + "'");
-    }
-    (*provider)->input_buffer_[io.name()] = std::make_pair(it->second, 0);
   }
 
   return Status::Success;
@@ -265,9 +93,7 @@ InferRequestProvider::GetInputOverrideShape(
   for (const auto& override_map : overrides_maps_) {
     auto it = override_map->find(name);
     if (it != override_map->end()) {
-      for (auto dim : it->second.dims_) {
-        shape->push_back(dim);
-      }
+      *shape = it->second.dims_;
       return true;
     }
   }
@@ -336,15 +162,15 @@ InferRequestProvider::GetNextInputContent(
     *memory_type = TRTSERVER_MEMORY_CPU;
     *memory_type_id = 0;
   } else {
-    const auto& pr = input_buffer_.find(name);
-    if (pr == input_buffer_.end()) {
+    auto* inputs = irequest_->MutableInputs();
+    auto it = inputs->find(name);
+    if (it == inputs->end()) {
       return Status(
           RequestStatusCode::INTERNAL, "unexpected input '" + name + "'");
     }
 
-    auto& input_content = pr->second;
-    *content = input_content.first->BufferAt(
-        input_content.second++, content_byte_size, memory_type, memory_type_id);
+    RETURN_IF_ERROR(it->second.NextContent(
+        content, content_byte_size, memory_type, memory_type_id));
   }
 
   return Status::Success;
@@ -354,13 +180,16 @@ Status
 InferRequestProvider::GetMemory(
     const std::string& name, std::shared_ptr<Memory>* input_buffer)
 {
-  auto it = input_buffer_.find(name);
-  if (it == input_buffer_.end()) {
+  const auto& inputs = irequest_->Inputs();
+  const auto it = inputs.find(name);
+  if (it == inputs.end()) {
     return Status(
         RequestStatusCode::INVALID_ARG,
         "input '" + name + "' is not found in the provider");
   }
-  *input_buffer = it->second.first;
+
+  *input_buffer = it->second.Data();
+
   return Status::Success;
 }
 
@@ -368,9 +197,10 @@ Status
 InferRequestProvider::GetMemoryWithOverride(
     const std::string& name, const Memory** input_buffer)
 {
-  auto it = input_buffer_.find(name);
-  if (it != input_buffer_.end()) {
-    *input_buffer = it->second.first.get();
+  const auto& inputs = irequest_->Inputs();
+  const auto it = inputs.find(name);
+  if (it != inputs.end()) {
+    *input_buffer = it->second.Data().get();
   } else {
     // check input overrides
     auto found = false;
@@ -498,19 +328,20 @@ AddClassResults(
 // InferResponseProvider
 //
 InferResponseProvider::InferResponseProvider(
-    const InferRequestHeader& request_header,
+    const std::shared_ptr<InferenceRequest>& irequest,
     const std::shared_ptr<LabelProvider>& label_provider,
     TRTSERVER_ResponseAllocator* allocator,
     TRTSERVER_ResponseAllocatorAllocFn_t alloc_fn, void* alloc_userp,
     TRTSERVER_ResponseAllocatorReleaseFn_t release_fn)
-    : request_header_(request_header), label_provider_(label_provider),
+    : irequest_(irequest), label_provider_(label_provider),
       allocator_(allocator), alloc_fn_(alloc_fn), alloc_userp_(alloc_userp),
       release_fn_(release_fn)
 {
-  // Create a map from output name to the InferRequestHeader::Output
+  // Create a map from output name to the InferenceRequest::Output
   // object for that output.
-  for (const InferRequestHeader::Output& output : request_header.output()) {
-    output_map_.emplace(std::make_pair(output.name(), output));
+  for (const auto& pr : irequest_->RequestedOutputs()) {
+    const auto& output = pr.second;
+    output_map_.emplace(std::make_pair(output.Name(), output));
   }
 }
 
@@ -568,7 +399,7 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
   response_header->set_model_name(is.Name());
   response_header->set_model_version(is.Version());
 
-  const size_t batch_size = request_header_.batch_size();
+  const size_t batch_size = irequest_->BatchSize();
   response_header->set_batch_size(batch_size);
 
   int output_idx = 0;
@@ -606,13 +437,18 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
     auto poutput = response_header->add_output();
     poutput->set_name(output.name_);
 
+    if (irequest_->ProtocolVersion() == 2) {
+      poutput->set_data_type(output_config->data_type());
+    }
+
     if (output.cls_count_ == 0) {
       // Raw result...
       poutput->mutable_raw()->Clear();
       poutput->mutable_raw()->set_batch_byte_size(output.byte_size_);
 
       // FIXMEV2 include batch dimension in V2 shape.
-      if ((is.ProtocolVersion() == 2) && (is.Config().max_batch_size() != 0)) {
+      if ((irequest_->ProtocolVersion() == 2) &&
+          (is.Config().max_batch_size() != 0)) {
         poutput->mutable_raw()->add_dims(batch_size);
       }
 
@@ -723,7 +559,7 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
 
 Status
 InferResponseProvider::Create(
-    const InferRequestHeader& request_header,
+    const std::shared_ptr<InferenceRequest>& irequest,
     const std::shared_ptr<LabelProvider>& label_provider,
     TRTSERVER_ResponseAllocator* allocator,
     TRTSERVER_ResponseAllocatorAllocFn_t alloc_fn, void* alloc_userp,
@@ -731,8 +567,7 @@ InferResponseProvider::Create(
     std::shared_ptr<InferResponseProvider>* infer_provider)
 {
   InferResponseProvider* provider = new InferResponseProvider(
-      request_header, label_provider, allocator, alloc_fn, alloc_userp,
-      release_fn);
+      irequest, label_provider, allocator, alloc_fn, alloc_userp, release_fn);
   infer_provider->reset(provider);
 
   return Status::Success;
@@ -815,7 +650,7 @@ InferResponseProvider::AllocateOutputBuffer(
   // type is GPU then set actual_memory_type to CPU and proceed. Otherwise,
   // return success and nullptr to align with the behavior of
   // 'TRTSERVER_ResponseAllocatorAllocFn_t'
-  const bool is_class = pr->second.has_cls();
+  const bool is_class = (pr->second.ClassificationCount() > 0);
   if (is_class) {
     // For class result no additional buffer is needed.
     if (content_byte_size == 0) {
@@ -825,7 +660,7 @@ InferResponseProvider::AllocateOutputBuffer(
               " while its output buffer size is 0");
     }
 
-    loutput->cls_count_ = pr->second.cls().count();
+    loutput->cls_count_ = pr->second.ClassificationCount();
     char* buffer = new char[content_byte_size];
     *content = static_cast<void*>(buffer);
     loutput->ptr_ = static_cast<void*>(buffer);

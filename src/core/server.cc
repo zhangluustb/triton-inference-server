@@ -50,6 +50,10 @@
 #include "src/core/server.h"
 #include "src/core/server_status.pb.h"
 
+#ifdef TRTIS_ENABLE_GPU
+#include "src/core/cuda_memory_manager.h"
+#endif  // TRTIS_ENABLE_GPU
+
 namespace nvidia { namespace inferenceserver {
 
 namespace {
@@ -84,17 +88,20 @@ InferenceServer::InferenceServer()
   id_ = "inference:0";
   protocol_version_ = 1;
   extensions_.push_back("classification");
-  extensions_.push_back("flat_tensor_format");
+  extensions_.push_back("model_repository");
   extensions_.push_back("model_configuration");
-  extensions_.push_back("model_control");
-  extensions_.push_back("sequence");
-  extensions_.push_back("shared_memory_tensor_format");
-  extensions_.push_back("statistics");
+  extensions_.push_back("system_shared_memory");
+  extensions_.push_back("cuda_shared_memory");
 
   strict_model_config_ = true;
   strict_readiness_ = true;
   exit_timeout_secs_ = 30;
   pinned_memory_pool_size_ = 1 << 28;
+#ifdef TRTIS_ENABLE_GPU
+  min_supported_compute_capability_ = TRTIS_MIN_COMPUTE_CAPABILITY;
+#else
+  min_supported_compute_capability_ = 0.0;
+#endif  // TRTIS_ENABLE_GPU
 
   tf_soft_placement_enabled_ = true;
   tf_gpu_memory_fraction_ = 0.0;
@@ -120,15 +127,6 @@ InferenceServer::Init()
         RequestStatusCode::INVALID_ARG, "--model-repository must be specified");
   }
 
-  // Create the shared memory manager that registers / unregisters and returns
-  // the shared memory regions that are current registered.
-  status =
-      SharedMemoryManager::Create(status_manager_, &shared_memory_manager_);
-  if (!status.IsOk()) {
-    ready_state_ = ServerReadyState::SERVER_FAILED_TO_INITIALIZE;
-    return status;
-  }
-
   PinnedMemoryManager::Options options(pinned_memory_pool_size_);
   status = PinnedMemoryManager::Create(options);
   if (!status.IsOk()) {
@@ -136,7 +134,30 @@ InferenceServer::Init()
     return status;
   }
 
-  status = EnablePeerAccess();
+#ifdef TRTIS_ENABLE_GPU
+  // Defer the setting of default CUDA memory pool value here as
+  // 'min_supported_compute_capability_' is finalized
+  std::set<int> supported_gpus;
+  if (GetSupportedGPUs(&supported_gpus, min_supported_compute_capability_)
+          .IsOk()) {
+    for (const auto gpu : supported_gpus) {
+      if (cuda_memory_pool_size_.find(gpu) == cuda_memory_pool_size_.end()) {
+        cuda_memory_pool_size_[gpu] = 1 << 26;
+      }
+    }
+  }
+  CudaMemoryManager::Options cuda_options(
+      min_supported_compute_capability_, cuda_memory_pool_size_);
+  status = CudaMemoryManager::Create(cuda_options);
+  // If CUDA memory manager can't be created, just log error as the
+  // server can still function properly
+  if (!status.IsOk()) {
+    LOG_ERROR << status.Message();
+  }
+#endif  // TRTIS_ENABLE_GPU
+
+
+  status = EnablePeerAccess(min_supported_compute_capability_);
   if (!status.IsOk()) {
     // failed to enable peer access is not critical, just inefficient.
     LOG_ERROR << status.Message();
@@ -150,7 +171,7 @@ InferenceServer::Init()
       this, version_, status_manager_, model_repository_paths_, startup_models_,
       strict_model_config_, tf_gpu_memory_fraction_, tf_soft_placement_enabled_,
       tf_vgpu_memory_limits_, polling_enabled, model_control_enabled,
-      &model_repository_manager_);
+      min_supported_compute_capability_, &model_repository_manager_);
   if (!status.IsOk()) {
     if (model_repository_manager_ == nullptr) {
       ready_state_ = ServerReadyState::SERVER_FAILED_TO_INITIALIZE;
@@ -391,83 +412,6 @@ InferenceServer::UnloadModel(const std::string& model_name)
 
   auto action_type = ModelRepositoryManager::ActionType::UNLOAD;
   return model_repository_manager_->LoadUnloadModel(model_name, action_type);
-}
-
-Status
-InferenceServer::RegisterSharedMemory(
-    const std::string& name, const std::string& shm_key, const size_t offset,
-    const size_t byte_size)
-{
-  if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
-  }
-
-  ScopedAtomicIncrement inflight(inflight_request_counter_);
-
-  return shared_memory_manager_->RegisterSharedMemory(
-      name, shm_key, offset, byte_size);
-}
-
-#ifdef TRTIS_ENABLE_GPU
-Status
-InferenceServer::RegisterCudaSharedMemory(
-    const std::string& name, const cudaIpcMemHandle_t* cuda_shm_handle,
-    const size_t byte_size, const int device_id)
-{
-  if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
-  }
-
-  ScopedAtomicIncrement inflight(inflight_request_counter_);
-
-  return shared_memory_manager_->RegisterCudaSharedMemory(
-      name, cuda_shm_handle, byte_size, device_id);
-}
-#endif  // TRTIS_ENABLE_GPU
-
-Status
-InferenceServer::UnregisterSharedMemory(const std::string& name)
-{
-  if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
-  }
-
-  ScopedAtomicIncrement inflight(inflight_request_counter_);
-
-  return shared_memory_manager_->UnregisterSharedMemory(name);
-}
-
-Status
-InferenceServer::UnregisterAllSharedMemory()
-{
-  if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
-  }
-
-  ScopedAtomicIncrement inflight(inflight_request_counter_);
-
-  return shared_memory_manager_->UnregisterAllSharedMemory();
-}
-
-Status
-InferenceServer::SharedMemoryAddress(
-    const std::string& name, size_t offset, size_t byte_size,
-    void** shm_mapped_addr)
-{
-  return shared_memory_manager_->SharedMemoryAddress(
-      name, offset, byte_size, shm_mapped_addr);
-}
-
-Status
-InferenceServer::GetSharedMemoryStatus(SharedMemoryStatus* shm_status)
-{
-  if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
-  }
-
-  ScopedAtomicIncrement inflight(inflight_request_counter_);
-
-  return shared_memory_manager_->GetSharedMemoryStatus(shm_status);
 }
 
 uint64_t

@@ -59,7 +59,7 @@ change directory to the root of the repo and checkout the release
 version of the branch that you want to build (or the master branch if
 you want to build the under-development version)::
 
-  $ git checkout r20.01
+  $ git checkout r20.02
 
 Then use docker to build::
 
@@ -106,7 +106,7 @@ CMake, change directory to the root of the repo and checkout the
 release version of the branch that you want to build (or the master
 branch if you want to build the under-development version)::
 
-  $ git checkout r20.01
+  $ git checkout r20.02
 
 Next you must build or install each framework backend you want to
 enable in the inference server, configure the inference server to
@@ -165,29 +165,32 @@ TensorFlow
 The version of TensorFlow used in the Dockerfile build can be found in
 the `Framework Containers Support Matrix
 <https://docs.nvidia.com/deeplearning/frameworks/support-matrix/index.html>`_.
-The trtserver_tf section of the Dockerfile shows how to build the
-required TensorFlow library from the `NGC <https://ngc.nvidia.com>`_
-TensorFlow container.
+The trtserver_tf section of the Dockerfile shows the required
+TensorFlow V1 container pulled from `NGC <https://ngc.nvidia.com>`_.
 
-You can build and install a different version of the TensorFlow
-library but you must build with the equivalent options indicated by
-the patches used in the Dockerfile, and you must include
-tensorflow_backend_tf.cc and tensorflow_backend_tf.h. The patch to
-tensorflow/BUILD and the build options shown in nvbuildopts cause
-TensorFlow backend to be built into a single library,
-libtensorflow_cc.so, that includes all the functionality required by
-the inference server.
+You can modify and rebuild this TensorFlow container to generate the
+libtensorflow_trtis.so shared library needed by the inference
+server. For example, in the TensorFlow container
+/workspace/docker-examples/Dockerfile.customtensorflow shows a
+Dockerfile that applies a patch to TensorFlow and then rebuilds. For
+the inference server you need to replace the nvbuild commands in that
+file with::
 
-Once you have the TensorFlow library built and installed you can
-enable the TensorFlow backend in the inference server with the CMake
-option -DTRTIS_ENABLE_TENSORRT=ON as described below. You must also
-specify -DTRTIS_ENABLE_GPU=ON because TensorRT requires GPU support.
+  RUN ./nvbuild.sh --python3.6 --trtis
 
-You can install the TensorFlow library in a system library path or you
-can specify the path with the CMake option
+In the newly build container the required TensorFlow library is
+/usr/local/lib/tensorflow/libtensorflow_trtis.so.1. On your build
+system you must place libtensorflow_trtis.so.1 in a system library
+path or you can specify the path with the CMake option
 TRTIS_EXTRA_LIB_PATHS. Multiple paths can be specified by separating
 them with a semicolon, for example,
--DTRTIS_EXTRA_LIB_PATHS="/path/a;/path/b".
+-DTRTIS_EXTRA_LIB_PATHS="/path/a;/path/b". Also create a soft link to
+the library as follows::
+
+  ln -s libtensorflow_trtis.so.1 libtensorflow_trtis.so
+
+Lastly, you must enable the TensorFlow backend in the inference server
+with the CMake option -DTRTIS_ENABLE_TENSORFLOW=ON as described below.
 
 ONNX Runtime
 ~~~~~~~~~~~~
@@ -201,9 +204,12 @@ different build process but you may have build or execution issues.
 Your build should produce the ONNX Runtime library, libonnxruntime.so.
 You can enable the ONNX Runtime backend in the inference server with
 the CMake option -DTRTIS_ENABLE_ONNXRUNTIME=ON as described below. If
-you want to enable OpenVino within the ONNX Runtime you must also
-specify the CMake option TRTIS_ENABLE_ONNXRUNTIME_OPENVINO=ON and
-provide the necessary OpenVino dependencies.
+you want to enable TensorRT within the ONNX Runtime you must also
+specify the CMake option TRTIS_ENABLE_ONNXRUNTIME_TENSORRT=ON and
+provide the necessary TensorRT dependencies. If you want to enable
+OpenVino within the ONNX Runtime you must also specify the CMake
+option TRTIS_ENABLE_ONNXRUNTIME_OPENVINO=ON and provide the necessary
+OpenVino dependencies.
 
 You can install the library in a system library path or you can
 specify the path with the CMake option TRTIS_EXTRA_LIB_PATHS. Multiple

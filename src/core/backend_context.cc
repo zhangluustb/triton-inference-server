@@ -176,7 +176,7 @@ BackendContext::SetInputBuffer(
                 name, pinned_buffer_info, payloads, stream, input);
           }
           // always reset 'pinned_buffer_info' to maintain proper input offset
-          pinned_buffer_info = {
+          pinned_buffer_info = BufferInfo{
               buffer_copy_offset + copied_byte_size + content_byte_size, 0, {}};
         }
       }
@@ -202,7 +202,8 @@ BackendContext::SetInputBuffer(
             name, pinned_buffer_info, payloads, stream, input);
       }
       // reset 'pinned_buffer_info'
-      pinned_buffer_info = {buffer_copy_offset + expected_byte_size, 0, {}};
+      pinned_buffer_info =
+          BufferInfo{buffer_copy_offset + expected_byte_size, 0, {}};
     }
 
     buffer_copy_offset += expected_byte_size;
@@ -358,10 +359,8 @@ BackendContext::SetFixedSizeOutputBuffer(
   output->indirect_buffers_.emplace_back();
   for (size_t idx = 0; idx < payloads->size(); idx++) {
     auto& payload = (*payloads)[idx];
-    const InferRequestHeader& request_header =
-        payload.request_provider_->RequestHeader();
-    const size_t expected_byte_size =
-        request_header.batch_size() * batch1_byte_size;
+    const auto& irequest = payload.request_provider_->Request();
+    const size_t expected_byte_size = irequest->BatchSize() * batch1_byte_size;
 
     // If 'payload' should have valid output (status ok) and
     // if 'payload' requested this output then copy it from
@@ -410,7 +409,8 @@ BackendContext::SetFixedSizeOutputBuffer(
                   name, pinned_buffer_info, payloads, stream_, output);
             }
             // reset 'pinned_buffer_info'
-            pinned_buffer_info = {output_offset + expected_byte_size, 0, {}};
+            pinned_buffer_info =
+                OutputBufferInfo{output_offset + expected_byte_size, 0, {}};
           }
         }
       }
@@ -431,7 +431,8 @@ BackendContext::SetFixedSizeOutputBuffer(
             name, pinned_buffer_info, payloads, stream_, output);
       }
       // reset 'pinned_buffer_info'
-      pinned_buffer_info = {output_offset + expected_byte_size, 0, {}};
+      pinned_buffer_info =
+          OutputBufferInfo{output_offset + expected_byte_size, 0, {}};
     }
 
     output_offset += expected_byte_size;
@@ -516,8 +517,7 @@ BackendContext::SetOutputShapeTensorBuffer(
   int shape_index = (support_batching ? 1 : 0);
   int nb_shape_values = content_shape[shape_index];
   for (auto& payload : *payloads) {
-    int this_batch_size =
-        payload.request_provider_->RequestHeader().batch_size();
+    int this_batch_size = payload.request_provider_->Request()->BatchSize();
     // Fix the content shape for this payload
     if (support_batching) {
       content_shape[0] = this_batch_size;
@@ -705,7 +705,7 @@ BackendContext::CompareOutputDims(
 
 Status
 BackendContext::PeekShapeTensor(
-    const InferRequestHeader::Input& input, const Scheduler::Payload& payload,
+    const InferenceRequest::Input& input, const Scheduler::Payload& payload,
     std::vector<int64_t>* shape)
 {
   // By default a backend doesn't support shape tensors.

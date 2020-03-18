@@ -44,7 +44,10 @@ class MetricModelReporter;
 //
 class InferenceBackend {
  public:
-  InferenceBackend() = default;
+  explicit InferenceBackend(const double min_compute_capability)
+      : min_compute_capability_(min_compute_capability)
+  {
+  }
   virtual ~InferenceBackend() {}
 
   // Get the name of model being served.
@@ -56,7 +59,7 @@ class InferenceBackend {
   // Get the configuration of model being served.
   const ModelConfig& Config() const { return config_; }
 
-  // Get the metric reportoer for the model being served.
+  // Get the metric reporter for the model being served.
   const std::shared_ptr<MetricModelReporter>& MetricReporter() const
   {
     return metric_reporter_;
@@ -87,8 +90,9 @@ class InferenceBackend {
       const std::shared_ptr<InferResponseProvider>& response_provider,
       std::function<void(const Status&)> OnCompleteHandleInfer);
 
-  uint32_t ProtocolVersion() const { return protocol_version_; }
-  void SetProtocolVersion(const uint32_t v) { protocol_version_ = v; }
+  uint32_t DefaultPriorityLevel() const { return default_priority_level_; }
+
+  uint32_t MaxPriorityLevel() const { return max_priority_level_; }
 
  protected:
   // Run model on the context associated with 'runner_idx' to
@@ -125,8 +129,7 @@ class InferenceBackend {
 
     std::string sample_name_;
     size_t batch_size_;
-    InferRequestHeader request_header_;
-    std::unordered_map<std::string, std::shared_ptr<Memory>> input_buffer_;
+    std::shared_ptr<InferenceRequest> irequest_;
     std::shared_ptr<InferRequestProvider::InputOverrideMap> input_override_;
 
     // Placeholder for input data
@@ -137,6 +140,9 @@ class InferenceBackend {
 
   // Generate warmup data
   Status GenerateWarmupData(std::vector<WarmupData>* samples);
+
+  // The minimum supported CUDA compute capability.
+  const double min_compute_capability_;
 
   // Configuration of the model that this backend represents.
   ModelConfig config_;
@@ -162,8 +168,11 @@ class InferenceBackend {
   // Path to model
   std::string model_dir_;
 
-  // To be removed when protocol version no longer needed...
-  uint32_t protocol_version_;
+  // The default priority level for the backend.
+  uint32_t default_priority_level_;
+
+  // The largest priority value for the backend.
+  uint32_t max_priority_level_;
 };
 
 }}  // namespace nvidia::inferenceserver

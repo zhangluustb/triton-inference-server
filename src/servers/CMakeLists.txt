@@ -107,26 +107,30 @@ endif() # TRTIS_ENABLE_GRPC || TRTIS_ENABLE_GRPC_V2
 set(HTTP_ENDPOINT_OBJECTS "")
 set(HTTP_ENDPOINT_LIBRARIES "")
 
-if(${TRTIS_ENABLE_HTTP} OR ${TRTIS_ENABLE_METRICS})
+if(${TRTIS_ENABLE_HTTP} OR ${TRTIS_ENABLE_METRICS} OR ${TRTIS_ENABLE_HTTP_V2})
   find_package(libevhtp CONFIG REQUIRED)
   message(STATUS "Using libevhtp ${libevhtp_VERSION}")
 
-  if(${TRTIS_ENABLE_HTTP_V2})
-    set(
-      HTTP_ENDPOINT_SRCS
-      http_v2_server.cc
-    )
-  else()
-    set(
+  if(${TRTIS_ENABLE_HTTP} OR ${TRTIS_ENABLE_METRICS})
+    list(APPEND
       HTTP_ENDPOINT_SRCS
       http_server.cc
-    )
-  endif() # TRTIS_ENABLE_HTTP_V2
-
-  set(
-    HTTP_ENDPOINT_HDRS
-    http_server.h
-  )
+      )
+    list(APPEND
+      HTTP_ENDPOINT_HDRS
+      http_server.h
+      )
+  endif() # TRTIS_ENABLE_HTTP || TRTIS_ENABLE_METRICS
+  if(${TRTIS_ENABLE_HTTP_V2} OR ${TRTIS_ENABLE_METRICS})
+    list(APPEND
+      HTTP_ENDPOINT_SRCS
+      http_server_v2.cc
+      )
+    list(APPEND
+      HTTP_ENDPOINT_HDRS
+      http_server_v2.h
+      )
+  endif() # TRTIS_ENABLE_HTTP_V2 || TRTIS_ENABLE_METRICS
 
   add_library(
     http-endpoint-library EXCLUDE_FROM_ALL OBJECT
@@ -147,14 +151,9 @@ if(${TRTIS_ENABLE_HTTP} OR ${TRTIS_ENABLE_METRICS})
     HTTP_ENDPOINT_OBJECTS
     $<TARGET_OBJECTS:http-endpoint-library>
     $<TARGET_OBJECTS:proto-library>
+    $<TARGET_OBJECTS:model-config-library>
   )
-  if(${TRTIS_ENABLE_HTTP_V2})
-    set(
-      HTTP_ENDPOINT_OBJECTS
-      ${HTTP_ENDPOINT_OBJECTS}
-      $<TARGET_OBJECTS:grpc-library>
-    )
-  endif() # TRTIS_ENABLE_HTTP_V2
+
   set(
     HTTP_ENDPOINT_LIBRARIES
     PRIVATE ${LIBEVENT_LIBRARIES}
@@ -162,15 +161,7 @@ if(${TRTIS_ENABLE_HTTP} OR ${TRTIS_ENABLE_METRICS})
     PRIVATE protobuf::libprotobuf
     PRIVATE -lre2
   )
-  if(${TRTIS_ENABLE_HTTP_V2})
-    set(
-      HTTP_ENDPOINT_LIBRARIES
-      ${HTTP_ENDPOINT_LIBRARIES}
-      PRIVATE gRPC::grpc++
-      PRIVATE gRPC::grpc
-    )
-  endif() # TRTIS_ENABLE_HTTP_V2
-endif() # TRTIS_ENABLE_HTTP || TRTIS_ENABLE_METRICS
+endif() # TRTIS_ENABLE_HTTP || TRTIS_ENABLE_METRICS || TRTIS_ENABLE_HTTP_V2
 
 #
 # tracing
@@ -211,14 +202,14 @@ set(
   TRTSERVER_SRCS
   main.cc
   common.cc
-  shared_memory_block_manager.cc
+  shared_memory_manager.cc
   ../core/logging.cc
 )
 
 set(
   TRTSERVER_HDRS
   common.h
-  shared_memory_block_manager.h
+  shared_memory_manager.h
   ../core/logging.h
 )
 
@@ -247,10 +238,17 @@ target_link_libraries(
   main
   ${HTTP_ENDPOINT_LIBRARIES}
   ${GRPC_ENDPOINT_LIBRARIES}
+  PRIVATE rt
   ${TRACING_LIBRARIES}
   PRIVATE protobuf::libprotobuf
   PRIVATE trtserver
 )
+if(${TRTIS_ENABLE_GPU})
+target_link_libraries(
+  main
+  PRIVATE ${CUDA_LIBRARIES}
+)
+endif() # TRTIS_ENABLE_GPU
 install(
   TARGETS main
   RUNTIME DESTINATION bin
@@ -298,6 +296,51 @@ target_link_libraries(
 endif() # TRTIS_ENABLE_GPU
 install(
   TARGETS simple
+  RUNTIME DESTINATION bin
+)
+
+#
+# simplev2
+#
+set(
+  SIMPLEV2_SRCS
+  simplev2.cc common.cc
+)
+
+set(
+  SIMPLEV2_HDRS
+)
+
+add_executable(
+  simplev2
+  ${SIMPLEV2_SRCS}
+  ${SIMPLEV2_HDRS}
+  $<TARGET_OBJECTS:proto-library>
+)
+set_target_properties(
+  simplev2
+  PROPERTIES
+    SKIP_BUILD_RPATH TRUE
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH_USE_LINK_PATH FALSE
+    INSTALL_RPATH ""
+)
+target_link_libraries(
+  simplev2
+  PRIVATE trtserver
+  PRIVATE protobuf::libprotobuf
+)
+if(${TRTIS_ENABLE_GPU})
+target_include_directories(simplev2 PRIVATE ${CUDA_INCLUDE_DIRS})
+target_link_libraries(
+  simplev2
+  PUBLIC -L/usr/local/cuda/lib64/stubs
+  PUBLIC -lnvidia-ml
+  PRIVATE ${CUDA_LIBRARIES}
+)
+endif() # TRTIS_ENABLE_GPU
+install(
+  TARGETS simplev2
   RUNTIME DESTINATION bin
 )
 
@@ -394,7 +437,6 @@ set_target_properties(
 target_link_libraries(
   trtserver
   PRIVATE -ldl
-  PRIVATE -lrt
   PRIVATE ${TRTIS_EXTRA_LDFLAGS}
   PRIVATE protobuf::libprotobuf
 )
@@ -411,7 +453,7 @@ if(${TRTIS_ENABLE_TENSORFLOW})
   target_link_libraries(
     trtserver
     PUBLIC ${TRTIS_EXTRA_LDFLAGS}
-    PUBLIC -ltensorflow_cc
+    PUBLIC -ltensorflow_trtis
   )
 endif() # TRTIS_ENABLE_TENSORFLOW
 
@@ -420,6 +462,8 @@ if(${TRTIS_ENABLE_CAFFE2} OR ${TRTIS_ENABLE_PYTORCH})
     trtserver
     PUBLIC ${TRTIS_EXTRA_LDFLAGS}
     PUBLIC -ltorch
+    PUBLIC -ltorch_cpu
+    PUBLIC -ltorch_cuda
     PUBLIC -lcaffe2_detectron_ops_gpu
     PUBLIC -lcaffe2_nvrtc
     PUBLIC -lc10
@@ -484,6 +528,8 @@ if(${TRTIS_ENABLE_GPU})
     PUBLIC -L/usr/local/cuda/lib64/stubs
     PUBLIC -lnvidia-ml
     PRIVATE ${CUDA_LIBRARIES}
+    PRIVATE -L${CNMEM_PATH}/lib
+    PRIVATE -lcnmem
   )
 endif() # TRTIS_ENABLE_GPU
 

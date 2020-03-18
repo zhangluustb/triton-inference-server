@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -31,13 +31,14 @@
 
 namespace nvidia { namespace inferenceserver {
 
-struct EnsembleTensor {
-  EnsembleTensor(bool isOutput) : ready(false), isOutput(isOutput) {}
-  bool ready;
-  bool isOutput;
-  std::vector<EnsembleTensor*> prev_nodes;
-  std::vector<EnsembleTensor*> next_nodes;
-};
+/// Get the integral version from a string, or fail if string does not
+/// represent a valid version.
+/// \param version_string The string version.
+/// \param version Returns the integral version.
+/// \return The error status. Failure if 'version_string' doesn't
+/// convert to valid version.
+Status GetModelVersionFromString(
+    const std::string& version_string, int64_t* version);
 
 /// Get version of a model from the path containing the model
 /// definition file.
@@ -76,20 +77,26 @@ Status GetTypedSequenceControlProperties(
 /// configuration for that platform.
 /// \param autofill If true attempt to determine any missing required
 /// configuration from the model definition.
+/// \param min_compute_capability The minimum support CUDA compute
+/// capability.
 /// \param config Returns the normalized model configuration.
 /// \return The error status.
 Status GetNormalizedModelConfig(
     const std::string& path, const BackendConfigMap& backend_config_map,
-    const bool autofill, ModelConfig* config);
+    const bool autofill, const double min_compute_capability,
+    ModelConfig* config);
 
 /// Validate that a model is specified correctly.
 /// \param config The model configuration to validate.
 /// \param expected_platform If non-empty the model will be checked
 /// to make sure its platform matches this value.
+/// \param min_compute_capability The minimum support CUDA compute
+/// capability.
 /// \return The error status. A non-OK status indicates the configuration
 /// is not valid.
 Status ValidateModelConfig(
-    const ModelConfig& config, const std::string& expected_platform);
+    const ModelConfig& config, const std::string& expected_platform,
+    const double min_compute_capability);
 
 /// Validate that the ensemble scheduling are specified correctly.
 /// \param ensemble_config The model configuration that specifies
@@ -97,18 +104,6 @@ Status ValidateModelConfig(
 /// \return The error status. A non-OK status indicates the configuration
 /// is not valid.
 Status ValidateEnsembleSchedulingConfig(const ModelConfig& ensemble_config);
-
-/// Build a graph that represents the data flow in the ensemble specifieed in
-/// given model config. the node (ensemble tensor) in the graph can be looked
-/// up using its name as key.
-/// \param ensemble_config The model configuration that specifies
-/// ensemble_scheduling field.
-/// \param keyed_ensemble_graph Returned the ensemble graph.
-/// \return The error status. A non-OK status indicates the build fails because
-/// the ensemble configuration is not valid.
-Status BuildEnsembleGraph(
-    const ModelConfig& ensemble_config,
-    std::unordered_map<std::string, EnsembleTensor>& keyed_ensemble_graph);
 
 /// Validate that input is specified correctly in a model
 /// configuration.
@@ -163,21 +158,6 @@ Status ParseBoolParameter(
 /// value.
 Status ParseLongLongParameter(
     const std::string& key, const std::string& value, int64_t* parsed_value);
-
-#ifdef TRTIS_ENABLE_GPU
-/// Validates the compute capability of the GPU indexed
-/// \param The index of the target GPU.
-/// \return The error status. A non-OK status means the target GPU is
-///  not supported
-Status CheckGPUCompatibility(const int gpu_id);
-
-/// Obtains a set of gpu ids that is supported by TRTIS.
-/// \param The set of integers which is populated by ids of
-///  supported GPUS
-/// \return The error status. A non-ok status means there were
-/// errors encountered while querying GPU devices.
-Status GetSupportedGPUs(std::set<int>& supported_gpus);
-#endif
 
 /// Obtain the 'profile_index' of the 'profile_name'.
 /// \param profile_name The name of the profile.

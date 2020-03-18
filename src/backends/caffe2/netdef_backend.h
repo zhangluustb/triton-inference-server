@@ -37,7 +37,10 @@ namespace nvidia { namespace inferenceserver {
 
 class NetDefBackend : public InferenceBackend {
  public:
-  NetDefBackend() = default;
+  explicit NetDefBackend(const double min_compute_capability)
+      : InferenceBackend(min_compute_capability)
+  {
+  }
   NetDefBackend(NetDefBackend&&) = default;
 
   // Create a context for execution for each instance for the
@@ -77,8 +80,8 @@ class NetDefBackend : public InferenceBackend {
 
     // Set an input tensor data from payloads.
     Status SetInput(
-        const std::string& name, const DataType datatype, const DimsList& dims,
-        const size_t total_batch_size,
+        const std::string& name, const DataType datatype,
+        const std::vector<int64_t>& dims, const size_t total_batch_size,
         std::vector<Scheduler::Payload>* payloads,
         std::vector<std::unique_ptr<AllocatedMemory>>* input_buffers,
         std::vector<InputInfo>* inputs, bool* cuda_copy);

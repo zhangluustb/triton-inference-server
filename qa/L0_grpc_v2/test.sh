@@ -25,77 +25,46 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+if [ "$#" -ge 1 ]; then
+    REPO_VERSION=$1
+fi
+if [ -z "$REPO_VERSION" ]; then
+    echo -e "Repository version must be specified"
+    echo -e "\n***\n*** Test Failed\n***"
+    exit 1
+fi
+
 set +e
 
 RET=0
 
-# Install client dependencies
-(apt-get update && \
-    ln -fs /usr/share/zoneinfo/America/New_York /etc/localtime && \
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y tzdata && \
-    dpkg-reconfigure --frontend noninteractive tzdata && \
-    apt-get install -y --no-install-recommends \
-        libopencv-dev \
-        libopencv-core-dev \
-        pkg-config \
-        python3 \
-        python3-pip \
-        python3-dev \
-        rapidjson-dev && \
-    rm -f /usr/bin/python && \
-    ln -s /usr/bin/python3 /usr/bin/python && \
-    pip3 install numpy && \
-    pip3 install --upgrade wheel setuptools && \
-    pip3 install --upgrade grpcio-tools)
-if [ $? -eq 0 ]; then
-    echo -e "\n***\n*** Dependency install Passed\n***"
-else
-    echo -e "\n***\n*** Dependency install Failed\n***"
-    exit 1
-fi
-
-# Build Server and clients with gRPC V2 Support
-(cd /workspace/builddir && \
-    rm -fr trtis trtis-clients && \
-    cmake -DCMAKE_BUILD_TYPE=Release \
-        -DTRTIS_ENABLE_METRICS=OFF \
-        -DTRTIS_ENABLE_METRICS_GPU=OFF \
-        -DTRTIS_ENABLE_GCS=OFF \
-        -DTRTIS_ENABLE_S3=OFF \
-        -DTRTIS_ENABLE_CUSTOM=ON \
-        -DTRTIS_ENABLE_TENSORRT=OFF \
-        -DTRTIS_ENABLE_TENSORFLOW=ON \
-        -DTRTIS_ENABLE_CAFFE2=OFF \
-        -DTRTIS_ENABLE_ONNXRUNTIME=OFF \
-        -DTRTIS_ENABLE_ONNXRUNTIME_OPENVINO=OFF \
-        -DTRTIS_ENABLE_PYTORCH=OFF \
-        -DTRTIS_ENABLE_GPU=OFF \
-        -DTRTIS_ENABLE_GRPC=ON \
-        -DTRTIS_ENABLE_HTTP=ON \
-        -DTRTIS_ENABLE_GRPC_V2=ON \
-        ../build && \
-    make -j16 trtis trtis-clients && \
-    cp -r trtis/install/bin /opt/tensorrtserver/. && \
-    cp -r trtis/install/lib /opt/tensorrtserver/. && \
-    cp -r trtis/install/include /opt/tensorrtserver/include/trtserver)
-
-# install the tensorrtserver wheel file
-pip3 install /workspace/builddir/trtis-clients/install/python/tensorrtserverV2-*.whl
-
-if [ $? -eq 0 ]; then
-    echo -e "\n***\n*** GRPC V2 Build Passed\n***"
-else
-    echo -e "\n***\n*** GRPC V2 Build Failed\n***"
-    exit 1
-fi
-
-
-SIMPLE_V2_CLIENT=/workspace/builddir/trtis-clients/install/python/simple_grpc_pyclient_v2.py
+SIMPLE_HEALTH_CLIENT=../clients/simple_grpc_v2_health_metadata.py
+SIMPLE_INFER_CLIENT=../clients/simple_grpc_v2_infer_client.py
+SIMPLE_ASYNC_INFER_CLIENT=../clients/simple_grpc_v2_async_infer_client.py
+SIMPLE_STRING_INFER_CLIENT=../clients/simple_grpc_v2_string_infer_client.py
+SIMPLE_CLASS_CLIENT=../clients/simple_grpc_v2_class_client.py
+SIMPLE_SHM_CLIENT=../clients/simple_grpc_v2_shm_client.py
+SIMPLE_CUDASHM_CLIENT=../clients/simple_grpc_v2_cudashm_client.py
+SIMPLE_MODEL_CONTROL=../clients/simple_grpc_v2_model_control.py
+EXPLICIT_BYTE_CONTENT_CLIENT=../clients/grpc_v2_explicit_byte_content_client.py
+EXPLICIT_INT_CONTENT_CLIENT=../clients/grpc_v2_explicit_int_content_client.py
+EXPLICIT_INT8_CONTENT_CLIENT=../clients/grpc_v2_explicit_int8_content_client.py
+GRPC_V2_CLIENT=../clients/grpc_v2_client.py
+GRPC_IMAGE_CLIENT=../clients/grpc_v2_image_client.py
 
 rm -f *.log
-(rm -fr models && mkdir models && \
-    cp -r /workspace/docs/examples/model_repository/simple models/.)
+rm -f *.log.*
+
+# Get the TensorFlow inception model
+mkdir -p models/inception_graphdef/1
+wget -O /tmp/inception_v3_2016_08_28_frozen.pb.tar.gz \
+     https://storage.googleapis.com/download.tensorflow.org/models/inception_v3_2016_08_28_frozen.pb.tar.gz
+(cd /tmp && tar xzf inception_v3_2016_08_28_frozen.pb.tar.gz)
+mv /tmp/inception_v3_2016_08_28_frozen.pb models/inception_graphdef/1/model.graphdef
+cp -r /data/inferenceserver/${REPO_VERSION}/qa_model_repository/graphdef_int8_int32_int32 models/
+cp -r /data/inferenceserver/${REPO_VERSION}/tf_model_store/resnet_v1_50_graphdef models/
+
 CLIENT_LOG=`pwd`/client.log
 DATADIR=`pwd`/models
 SERVER=/opt/tensorrtserver/bin/trtserver
@@ -113,14 +82,75 @@ if [ "$SERVER_PID" == "0" ]; then
     exit 1
 fi
 
-python $SIMPLE_V2_CLIENT -v >> $CLIENT_LOG 2>&1
+# Test health
+python $SIMPLE_HEALTH_CLIENT -v >> ${CLIENT_LOG}.health 2>&1
 if [ $? -ne 0 ]; then
-    cat $CLIENT_LOG
+    cat ${CLIENT_LOG}.health
     RET=1
 fi
 
-if [ $(cat $CLIENT_LOG | grep "PASS" | wc -l) -ne 9 ]; then
-    cat $CLIENT_LOG
+if [ $(cat ${CLIENT_LOG}.health | grep "PASS" | wc -l) -ne 7 ]; then
+    cat ${CLIENT_LOG}.health
+    RET=1
+fi
+
+IMAGE=../images/vulture.jpeg
+for i in \
+        $SIMPLE_INFER_CLIENT \
+        $SIMPLE_ASYNC_INFER_CLIENT \
+        $SIMPLE_STRING_INFER_CLIENT \
+        $SIMPLE_CLASS_CLIENT \
+        $SIMPLE_SHM_CLIENT \
+        $SIMPLE_CUDASHM_CLIENT \
+        $EXPLICIT_BYTE_CONTENT_CLIENT \
+        $EXPLICIT_INT_CONTENT_CLIENT \
+        $EXPLICIT_INT8_CONTENT_CLIENT \
+        $GRPC_V2_CLIENT \
+        $GRPC_IMAGE_CLIENT \
+        ; do
+    BASE=$(basename -- $i)
+    SUFFIX="${BASE%.*}"
+    if [[ $SUFFIX == "simple_grpc_v2_class_client" || $SUFFIX == "grpc_v2_image_client" ]]; then
+        python $i -m inception_graphdef -s INCEPTION -c 1 -b 1 $IMAGE >> "${CLIENT_LOG}.${SUFFIX}" 2>&1
+    else
+        python $i -v >> "${CLIENT_LOG}.${SUFFIX}" 2>&1
+    fi
+
+    if [ $? -ne 0 ]; then
+        cat "${CLIENT_LOG}.${SUFFIX}"
+        RET=1
+    fi
+
+    if [ $(cat "${CLIENT_LOG}.${SUFFIX}" | grep "PASS" | wc -l) -ne 1 ]; then
+        cat "${CLIENT_LOG}.${SUFFIX}"
+        RET=1
+    fi
+done
+
+kill $SERVER_PID
+wait $SERVER_PID
+
+SERVER_ARGS="--model-repository=$DATADIR --model-control-mode=explicit --api-version 2"
+# FIXMEPV2
+# Cannot use run_server since it repeatedly curls the (old) HTTP health endpoint to know
+# when the server is ready. This endpoint would not exist in future.
+run_server_nowait
+sleep 10
+if [ "$SERVER_PID" == "0" ]; then
+    echo -e "\n***\n*** Failed to start $SERVER\n***"
+    cat $SERVER_LOG
+    exit 1
+fi
+
+# Test Model Control API
+python $SIMPLE_MODEL_CONTROL -v >> ${CLIENT_LOG}.model_control 2>&1
+if [ $? -ne 0 ]; then
+    cat ${CLIENT_LOG}.model_control
+    RET=1
+fi
+
+if [ $(cat ${CLIENT_LOG}.model_control | grep "PASS" | wc -l) -ne 1 ]; then
+    cat ${CLIENT_LOG}.model_control
     RET=1
 fi
 
@@ -128,6 +158,7 @@ kill $SERVER_PID
 wait $SERVER_PID
 
 set -e
+
 
 if [ $RET -eq 0 ]; then
     echo -e "\n***\n*** Test Passed\n***"

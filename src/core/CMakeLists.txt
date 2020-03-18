@@ -172,22 +172,22 @@ set(
   ensemble_scheduler.cc
   ensemble_utils.cc
   filesystem.cc
+  infer_request.cc
   label_provider.cc
   logging.cc
+  memory.cc
   metric_model_reporter.cc
   metrics.cc
   model_config_utils.cc
   model_repository_manager.cc
-  tracing.cc
   pinned_memory_manager.cc
   provider.cc
-  provider_utils.cc
   scheduler_utils.cc
   sequence_batch_scheduler.cc
   server.cc
   server_status.cc
-  shared_memory_manager.cc
   status.cc
+  tracing.cc
   trtserver.cc
 )
 
@@ -202,27 +202,41 @@ set(
   ensemble_scheduler.h
   ensemble_utils.h
   filesystem.h
+  infer_request.h
   label_provider.h
   logging.h
+  memory.h
   metric_model_reporter.h
   metrics.h
   model_config_utils.h
   model_repository_manager.h
   nvtx.h
-  tracing.h
   pinned_memory_manager.h
   provider.h
-  provider_utils.h
   sync_queue.h
   scheduler.h
   scheduler_utils.h
   sequence_batch_scheduler.h
   server.h
   server_status.h
-  shared_memory_manager.h
   status.h
+  tracing.h
   trtserver.h
+  trtserver2.h
 )
+
+if(${TRTIS_ENABLE_GPU})
+  set(
+    SERVER_SRCS
+    ${SERVER_SRCS}
+    cuda_memory_manager.cc
+  )
+  set(
+    SERVER_HDRS
+    ${SERVER_HDRS}
+    cuda_memory_manager.h
+  )
+endif() # TRTIS_ENABLE_GPU
 
 add_library(
   server-library EXCLUDE_FROM_ALL OBJECT
@@ -234,6 +248,7 @@ if(${TRTIS_ENABLE_GPU})
   target_include_directories(
     server-library
     PRIVATE ${CUDA_INCLUDE_DIRS}
+    PRIVATE ${CNMEM_PATH}/include
   )
 endif() # TRTIS_ENABLE_GPU
 

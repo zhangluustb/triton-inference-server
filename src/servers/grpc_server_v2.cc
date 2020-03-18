@@ -187,16 +187,25 @@ struct AllocPayload {
   };
 
   using TensorShmMap = std::unordered_map<std::string, ShmInfo>;
+  using TensorSerializedDataMap =
+      std::unordered_map<std::string, std::shared_ptr<std::string>>;
 
-  explicit AllocPayload() : response_(nullptr), shm_map_(nullptr) {}
+  explicit AllocPayload()
+      : response_(nullptr), shm_map_(nullptr), serialized_data_map_(nullptr)
+  {
+  }
   ~AllocPayload()
   {
     // Don't delete 'response_'.. it is owned by the HandlerState
     delete shm_map_;
+    delete serialized_data_map_;
   }
 
   ModelInferResponse* response_;
   TensorShmMap* shm_map_;
+  // Used to extend the lifetime of the serialized data in case
+  // repeated byte contents were provided in the request.
+  TensorSerializedDataMap* serialized_data_map_;
 };
 
 //
@@ -505,6 +514,517 @@ Handler<ServiceType, ServerResponderType, RequestType, ResponseType>::Stop()
   LOG_VERBOSE(1) << "Thread exited for " << Name();
 }
 
+template <typename ResponderType, typename RequestType, typename ResponseType>
+class CommonCallData : public GRPCServerV2::ICallData {
+ public:
+  using StandardRegisterFunc = std::function<void(
+      grpc::ServerContext*, RequestType*, ResponderType*, void*)>;
+  using StandardCallbackFunc =
+      std::function<void(RequestType&, ResponseType*, grpc::Status*)>;
+
+  CommonCallData(
+      const std::string& name, const uint64_t id,
+      const StandardRegisterFunc OnRegister,
+      const StandardCallbackFunc OnCallback)
+      : name_(name), id_(id), OnRegister_(OnRegister), OnCallback_(OnCallback),
+        responder_(&ctx_), step_(Steps::START)
+  {
+    OnRegister_(&ctx_, &request_, &responder_, this);
+    LOG_VERBOSE(1) << "Ready for RPC '" << name_ << "', " << id_;
+  }
+
+  bool Process(bool ok) override;
+
+  std::string Name() override { return name_; }
+
+  uint64_t Id() override { return id_; }
+
+ private:
+  const std::string name_;
+  const uint64_t id_;
+  const StandardRegisterFunc OnRegister_;
+  const StandardCallbackFunc OnCallback_;
+
+  grpc::ServerContext ctx_;
+
+  ResponderType responder_;
+  RequestType request_;
+
+  Steps step_;
+};
+
+template <typename ResponderType, typename RequestType, typename ResponseType>
+bool
+CommonCallData<ResponderType, RequestType, ResponseType>::Process(bool rpc_ok)
+{
+  LOG_VERBOSE(1) << "Process for " << name_ << ", rpc_ok=" << rpc_ok << ", "
+                 << id_ << " step " << step_;
+
+  // If RPC failed on a new request then the server is shutting down
+  // and so we should do nothing (including not registering for a new
+  // request). If RPC failed on a non-START step then there is nothing
+  // we can do since we one execute one step.
+  const bool shutdown = (!rpc_ok && (step_ == Steps::START));
+  if (shutdown) {
+    step_ = Steps::FINISH;
+  }
+
+  if (step_ == Steps::START) {
+    ResponseType response;
+    grpc::Status status;
+
+    OnCallback_(request_, &response, &status);
+
+    step_ = Steps::COMPLETE;
+
+    responder_.Finish(response, status, this);
+  } else if (step_ == Steps::COMPLETE) {
+    step_ = Steps::FINISH;
+  }
+
+  if (!shutdown && (step_ == Steps::FINISH)) {
+    new CommonCallData<ResponderType, RequestType, ResponseType>(
+        name_, id_ + 1, OnRegister_, OnCallback_);
+  }
+
+  return step_ != Steps::FINISH;
+}
+
+//
+// CommonHandler
+//
+class CommonHandler : public GRPCServerV2::HandlerBase {
+ public:
+  CommonHandler(
+      const std::string& name,
+      const std::shared_ptr<TRTSERVER_Server>& trtserver, const char* server_id,
+      const std::shared_ptr<SharedMemoryManager>& shm_manager,
+      GRPCInferenceService::AsyncService* service,
+      grpc::ServerCompletionQueue* cq);
+
+  // Descriptive name of of the handler.
+  const std::string& Name() const { return name_; }
+
+  // Start handling requests.
+  void Start();
+
+  // Stop handling requests.
+  void Stop();
+
+ private:
+  void SetUpAllRequests();
+
+  const std::string name_;
+  std::shared_ptr<TRTSERVER_Server> trtserver_;
+  const char* const server_id_;
+
+  std::shared_ptr<SharedMemoryManager> shm_manager_;
+
+  GRPCInferenceService::AsyncService* service_;
+  grpc::ServerCompletionQueue* cq_;
+  std::unique_ptr<std::thread> thread_;
+};
+
+CommonHandler::CommonHandler(
+    const std::string& name, const std::shared_ptr<TRTSERVER_Server>& trtserver,
+    const char* server_id,
+    const std::shared_ptr<SharedMemoryManager>& shm_manager,
+    GRPCInferenceService::AsyncService* service,
+    grpc::ServerCompletionQueue* cq)
+    : name_(name), trtserver_(trtserver), server_id_(server_id),
+      shm_manager_(shm_manager), service_(service), cq_(cq)
+{
+}
+
+void
+CommonHandler::Start()
+{
+  // Use a barrier to make sure we don't return until thread has
+  // started.
+  auto barrier = std::make_shared<Barrier>(2);
+
+  thread_.reset(new std::thread([this, barrier] {
+    SetUpAllRequests();
+    barrier->Wait();
+
+    void* tag;
+    bool ok;
+
+    while (cq_->Next(&tag, &ok)) {
+      GRPCServerV2::ICallData* call_data =
+          static_cast<GRPCServerV2::ICallData*>(tag);
+      if (!call_data->Process(ok)) {
+        LOG_VERBOSE(1) << "Done for " << call_data->Name() << ", "
+                       << call_data->Id();
+        delete call_data;
+      }
+    }
+  }));
+
+  barrier->Wait();
+  LOG_VERBOSE(1) << "Thread started for " << Name();
+}
+
+void
+CommonHandler::Stop()
+{
+  if (thread_->joinable()) {
+    thread_->join();
+  }
+
+  LOG_VERBOSE(1) << "Thread exited for " << Name();
+}
+
+void
+CommonHandler::SetUpAllRequests()
+{
+  // Define all the RPCs to be handled by this handler below
+  //
+  // The format of each RPC specification is :
+  // 1. A OnRegister function: This will be called when the
+  //    server is ready to receive the requests for this RPC.
+  // 2. A OnExecute function: This will be called when the
+  //    to process the request.
+  // 3. Create a CommonCallData object with the above callback
+  //    functions
+
+
+  //
+  // SystemSharedMemoryStatus
+  //
+  auto OnRegisterSystemSharedMemoryStatus =
+      [this](
+          grpc::ServerContext* ctx, SystemSharedMemoryStatusRequest* request,
+          grpc::ServerAsyncResponseWriter<SystemSharedMemoryStatusResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestSystemSharedMemoryStatus(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteSystemSharedMemoryStatus =
+      [this](
+          SystemSharedMemoryStatusRequest& request,
+          SystemSharedMemoryStatusResponse* response, grpc::Status* status) {
+        TRTSERVER_Error* err =
+            shm_manager_->GetStatusV2(request.name(), response);
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<SystemSharedMemoryStatusResponse>,
+      SystemSharedMemoryStatusRequest, SystemSharedMemoryStatusResponse>(
+      "SystemSharedMemoryStatus", 0, OnRegisterSystemSharedMemoryStatus,
+      OnExecuteSystemSharedMemoryStatus);
+
+
+  //
+  // SystemSharedMemoryRegister
+  //
+  auto OnRegisterSystemSharedMemoryRegister =
+      [this](
+          grpc::ServerContext* ctx, SystemSharedMemoryRegisterRequest* request,
+          grpc::ServerAsyncResponseWriter<SystemSharedMemoryRegisterResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestSystemSharedMemoryRegister(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteSystemSharedMemoryRegister =
+      [this](
+          SystemSharedMemoryRegisterRequest& request,
+          SystemSharedMemoryRegisterResponse* response, grpc::Status* status) {
+        TRTSERVER_Error* err = shm_manager_->RegisterSystemSharedMemory(
+            request.name(), request.key(), request.offset(),
+            request.byte_size());
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<SystemSharedMemoryRegisterResponse>,
+      SystemSharedMemoryRegisterRequest, SystemSharedMemoryRegisterResponse>(
+      "SystemSharedMemoryRegister", 0, OnRegisterSystemSharedMemoryRegister,
+      OnExecuteSystemSharedMemoryRegister);
+
+
+  //
+  // SystemSharedMemoryUnregister
+  //
+  auto OnRegisterSystemSharedMemoryUnregister =
+      [this](
+          grpc::ServerContext* ctx,
+          SystemSharedMemoryUnregisterRequest* request,
+          grpc::ServerAsyncResponseWriter<SystemSharedMemoryUnregisterResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestSystemSharedMemoryUnregister(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteSystemSharedMemoryUnregister =
+      [this](
+          SystemSharedMemoryUnregisterRequest& request,
+          SystemSharedMemoryUnregisterResponse* response,
+          grpc::Status* status) {
+        TRTSERVER_Error* err = nullptr;
+        if (request.name().empty()) {
+          err = shm_manager_->UnregisterAllV2(TRTSERVER_MEMORY_CPU);
+        } else {
+          err =
+              shm_manager_->UnregisterV2(request.name(), TRTSERVER_MEMORY_CPU);
+        }
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<SystemSharedMemoryUnregisterResponse>,
+      SystemSharedMemoryUnregisterRequest,
+      SystemSharedMemoryUnregisterResponse>(
+      "SystemSharedMemoryUnregister", 0, OnRegisterSystemSharedMemoryUnregister,
+      OnExecuteSystemSharedMemoryUnregister);
+
+
+  //
+  // CudaSharedMemoryStatus
+  //
+  auto OnRegisterCudaSharedMemoryStatus =
+      [this](
+          grpc::ServerContext* ctx, CudaSharedMemoryStatusRequest* request,
+          grpc::ServerAsyncResponseWriter<CudaSharedMemoryStatusResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestCudaSharedMemoryStatus(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+  auto OnExecuteCudaSharedMemoryStatus =
+      [this](
+          CudaSharedMemoryStatusRequest& request,
+          CudaSharedMemoryStatusResponse* response, grpc::Status* status) {
+        TRTSERVER_Error* err =
+            shm_manager_->GetStatusV2(request.name(), response);
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<CudaSharedMemoryStatusResponse>,
+      CudaSharedMemoryStatusRequest, CudaSharedMemoryStatusResponse>(
+      "CudaSharedMemoryStatus", 0, OnRegisterCudaSharedMemoryStatus,
+      OnExecuteCudaSharedMemoryStatus);
+
+
+  //
+  // CudaSharedMemoryRegister
+  //
+  auto OnRegisterCudaSharedMemoryRegister =
+      [this](
+          grpc::ServerContext* ctx, CudaSharedMemoryRegisterRequest* request,
+          grpc::ServerAsyncResponseWriter<CudaSharedMemoryRegisterResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestCudaSharedMemoryRegister(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteCudaSharedMemoryRegister =
+      [this](
+          CudaSharedMemoryRegisterRequest& request,
+          CudaSharedMemoryRegisterResponse* response, grpc::Status* status) {
+        TRTSERVER_Error* err = nullptr;
+#ifdef TRTIS_ENABLE_GPU
+        err = shm_manager_->RegisterCUDASharedMemory(
+            request.name(),
+            reinterpret_cast<const cudaIpcMemHandle_t*>(
+                request.raw_handle().c_str()),
+            request.byte_size(), request.device_id());
+#else
+        err = TRTSERVER_ErrorNew(
+            TRTSERVER_ERROR_INVALID_ARG,
+            std::string(
+                "failed to register CUDA shared memory region: '" +
+                request.name() + "', GPUs not supported")
+                .c_str());
+#endif  // TRTIS_ENABLE_GPU
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<CudaSharedMemoryRegisterResponse>,
+      CudaSharedMemoryRegisterRequest, CudaSharedMemoryRegisterResponse>(
+      "CudaSharedMemoryRegister", 0, OnRegisterCudaSharedMemoryRegister,
+      OnExecuteCudaSharedMemoryRegister);
+
+  //
+  // CudaSharedMemoryUnregister
+  //
+  auto OnRegisterCudaSharedMemoryUnregister =
+      [this](
+          grpc::ServerContext* ctx, CudaSharedMemoryUnregisterRequest* request,
+          grpc::ServerAsyncResponseWriter<CudaSharedMemoryUnregisterResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestCudaSharedMemoryUnregister(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteCudaSharedMemoryUnregister =
+      [this](
+          CudaSharedMemoryUnregisterRequest& request,
+          CudaSharedMemoryUnregisterResponse* response, grpc::Status* status) {
+        TRTSERVER_Error* err = nullptr;
+        if (request.name().empty()) {
+          err = shm_manager_->UnregisterAllV2(TRTSERVER_MEMORY_GPU);
+        } else {
+          err =
+              shm_manager_->UnregisterV2(request.name(), TRTSERVER_MEMORY_GPU);
+        }
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<CudaSharedMemoryUnregisterResponse>,
+      CudaSharedMemoryUnregisterRequest, CudaSharedMemoryUnregisterResponse>(
+      "CudaSharedMemoryUnregister", 0, OnRegisterCudaSharedMemoryUnregister,
+      OnExecuteCudaSharedMemoryUnregister);
+
+  //
+  // RepositoryIndex
+  //
+  auto OnRegisterRepositoryIndex =
+      [this](
+          grpc::ServerContext* ctx, RepositoryIndexRequest* request,
+          grpc::ServerAsyncResponseWriter<RepositoryIndexResponse>* responder,
+          void* tag) {
+        this->service_->RequestRepositoryIndex(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteRepositoryIndex = [this](
+                                      RepositoryIndexRequest& request,
+                                      RepositoryIndexResponse* response,
+                                      grpc::Status* status) {
+    TRTSERVER_Error* err = nullptr;
+    if (request.repository_name().empty()) {
+      TRTSERVER_Protobuf* repository_index_protobuf = nullptr;
+      err = TRTSERVER_ServerModelRepositoryIndex(
+          trtserver_.get(), &repository_index_protobuf);
+      if (err == nullptr) {
+        const char* serialized_buffer;
+        size_t serialized_byte_size;
+        err = TRTSERVER_ProtobufSerialize(
+            repository_index_protobuf, &serialized_buffer,
+            &serialized_byte_size);
+        if (err == nullptr) {
+          if (!response->ParseFromArray(
+                  serialized_buffer, serialized_byte_size)) {
+            err = TRTSERVER_ErrorNew(
+                TRTSERVER_ERROR_UNKNOWN, "failed to parse repository index");
+          }
+        }
+      }
+      TRTSERVER_ProtobufDelete(repository_index_protobuf);
+    } else {
+      err = TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_UNSUPPORTED,
+          "'repository_name' specification is not supported");
+    }
+
+    GrpcStatusUtil::Create(status, err);
+    TRTSERVER_ErrorDelete(err);
+  };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<RepositoryIndexResponse>,
+      RepositoryIndexRequest, RepositoryIndexResponse>(
+      "RepositoryIndex", 0, OnRegisterRepositoryIndex,
+      OnExecuteRepositoryIndex);
+
+  //
+  // RepositoryModelLoad
+  //
+  auto OnRegisterRepositoryModelLoad =
+      [this](
+          grpc::ServerContext* ctx, RepositoryModelLoadRequest* request,
+          grpc::ServerAsyncResponseWriter<RepositoryModelLoadResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestRepositoryModelLoad(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteRepositoryModelLoad = [this](
+                                          RepositoryModelLoadRequest& request,
+                                          RepositoryModelLoadResponse* response,
+                                          grpc::Status* status) {
+    TRTSERVER_Error* err = nullptr;
+    if (request.repository_name().empty()) {
+      err = TRTSERVER_ServerLoadModel(
+          trtserver_.get(), request.model_name().c_str());
+    } else {
+      err = TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_UNSUPPORTED,
+          "'repository_name' specification is not supported");
+    }
+
+    GrpcStatusUtil::Create(status, err);
+    TRTSERVER_ErrorDelete(err);
+  };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<RepositoryModelLoadResponse>,
+      RepositoryModelLoadRequest, RepositoryModelLoadResponse>(
+      "RepositoryModelLoad", 0, OnRegisterRepositoryModelLoad,
+      OnExecuteRepositoryModelLoad);
+
+  //
+  // RepositoryModelUnload
+  //
+  auto OnRegisterRepositoryModelUnload =
+      [this](
+          grpc::ServerContext* ctx, RepositoryModelUnloadRequest* request,
+          grpc::ServerAsyncResponseWriter<RepositoryModelUnloadResponse>*
+              responder,
+          void* tag) {
+        this->service_->RequestRepositoryModelUnload(
+            ctx, request, responder, this->cq_, this->cq_, tag);
+      };
+
+  auto OnExecuteRepositoryModelUnload =
+      [this](
+          RepositoryModelUnloadRequest& request,
+          RepositoryModelUnloadResponse* response, grpc::Status* status) {
+        TRTSERVER_Error* err = nullptr;
+        if (request.repository_name().empty()) {
+          err = TRTSERVER_ServerUnloadModel(
+              trtserver_.get(), request.model_name().c_str());
+        } else {
+          err = TRTSERVER_ErrorNew(
+              TRTSERVER_ERROR_UNSUPPORTED,
+              "'repository_name' specification is not supported");
+        }
+
+        GrpcStatusUtil::Create(status, err);
+        TRTSERVER_ErrorDelete(err);
+      };
+
+  new CommonCallData<
+      grpc::ServerAsyncResponseWriter<RepositoryModelUnloadResponse>,
+      RepositoryModelUnloadRequest, RepositoryModelUnloadResponse>(
+      "RepositoryModelUnload", 0, OnRegisterRepositoryModelUnload,
+      OnExecuteRepositoryModelUnload);
+}
+
 //
 // ServerLiveHandler
 //
@@ -751,27 +1271,31 @@ ModelReadyHandler::Process(Handler::State* state, bool rpc_ok)
       } else {
         const ModelStatus& model_status = nitr->second;
 
-        // If requested version is -1 then find the highest valued
-        // version.
-        int64_t requested_version = request.version();
-        if (requested_version == -1) {
-          for (const auto& pr : model_status.version_status()) {
-            requested_version = std::max(requested_version, pr.first);
+        int64_t requested_version;
+        err = GetModelVersionFromString(request.version(), &requested_version);
+        if (err == nullptr) {
+          // If requested_version is -1 then find the highest valued
+          // version.
+          if (requested_version == -1) {
+            for (const auto& pr : model_status.version_status()) {
+              requested_version = std::max(requested_version, pr.first);
+            }
           }
-        }
 
-        const auto& vitr =
-            model_status.version_status().find(requested_version);
-        if (vitr == model_status.version_status().end()) {
-          err = TRTSERVER_ErrorNew(
-              TRTSERVER_ERROR_INVALID_ARG,
-              std::string(
-                  "no status available for model '" + request.name() +
-                  "', version " + std::to_string(request.version()))
-                  .c_str());
-        } else {
-          const ModelVersionStatus& version_status = vitr->second;
-          ready = version_status.ready_state() == ModelReadyState::MODEL_READY;
+          const auto& vitr =
+              model_status.version_status().find(requested_version);
+          if (vitr == model_status.version_status().end()) {
+            err = TRTSERVER_ErrorNew(
+                TRTSERVER_ERROR_INVALID_ARG,
+                std::string(
+                    "no status available for model '" + request.name() +
+                    "', version " + std::to_string(requested_version))
+                    .c_str());
+          } else {
+            const ModelVersionStatus& version_status = vitr->second;
+            ready =
+                version_status.ready_state() == ModelReadyState::MODEL_READY;
+          }
         }
       }
     }
@@ -986,13 +1510,13 @@ ModelMetadataHandler::Process(Handler::State* state, bool rpc_ok)
         response.set_name(model_config.name());
         response.set_platform(model_config.platform());
         for (const auto& pr : model_status.version_status()) {
-          response.add_versions(pr.first);
+          response.add_versions(std::to_string(pr.first));
         }
 
         for (const auto& io : model_config.input()) {
           ModelMetadataResponse::TensorMetadata* input = response.add_inputs();
           input->set_name(io.name());
-          input->set_datatype(GetDataTypeProtocolString(io.data_type()));
+          input->set_datatype(DataTypeToProtocolString(io.data_type()));
           for (const auto d : io.dims()) {
             input->add_shape(d);
           }
@@ -1002,7 +1526,7 @@ ModelMetadataHandler::Process(Handler::State* state, bool rpc_ok)
           ModelMetadataResponse::TensorMetadata* output =
               response.add_outputs();
           output->set_name(io.name());
-          output->set_datatype(GetDataTypeProtocolString(io.data_type()));
+          output->set_datatype(DataTypeToProtocolString(io.data_type()));
           for (const auto d : io.dims()) {
             output->add_shape(d);
           }
@@ -1175,16 +1699,17 @@ InferResponseAlloc(
     if (shm_map != nullptr) {
       const auto& pr = shm_map->find(tensor_name);
       if (pr != shm_map->end()) {
-        // If the output is in shared memory then check that the expected
-        // requested buffer size is at least the byte size of the output.
+        // If the output is in shared memory then check whether the shared
+        // memory size is at least the byte size of the output.
         if (byte_size > pr->second.byte_size_) {
           return TRTSERVER_ErrorNew(
               TRTSERVER_ERROR_INTERNAL,
               std::string(
-                  "for output " + std::string(tensor_name) +
-                  " expected requested buffer size to be at least" +
-                  std::to_string(pr->second.byte_size_) + " bytes but got " +
-                  std::to_string(byte_size) + " in actual request")
+                  "shared memory size specified with the request for output '" +
+                  std::string(tensor_name) + "' (" +
+                  std::to_string(pr->second.byte_size_) +
+                  " bytes) should be at least " + std::to_string(byte_size) +
+                  " bytes to hold the results")
                   .c_str());
         }
 
@@ -1228,41 +1753,138 @@ InferResponseRelease(
   LOG_VERBOSE(1) << "GRPC release: "
                  << "size " << byte_size << ", addr " << buffer;
 
-  // Don't do anything when releasing a buffer since ResponseAlloc
+  // Don't do anything when releasing a buffer since InferResponseAlloc
   // wrote directly into the response protobuf.
   return nullptr;  // Success
+}
+
+template <typename TensorType>
+TRTSERVER_Error*
+ParseSharedMemoryParams(
+    const TensorType& tensor, bool* has_shared_memory, std::string* region_name,
+    int64_t* offset, size_t* byte_size)
+{
+  *has_shared_memory = false;
+  *offset = 0 /* default value */;
+  const auto& region_it = tensor.parameters().find("shared_memory_region");
+  if (region_it != tensor.parameters().end()) {
+    *has_shared_memory = true;
+    const auto& infer_param = region_it->second;
+    if (infer_param.parameter_choice_case() !=
+        InferParameter::ParameterChoiceCase::kStringParam) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "invalid value type for 'shared_memory_region' parameter for "
+              "tensor '" +
+              tensor.name() + "', expected string_param.")
+              .c_str());
+    }
+    *region_name = infer_param.string_param();
+  }
+
+  const auto& offset_it = tensor.parameters().find("shared_memory_offset");
+  if (offset_it != tensor.parameters().end()) {
+    if (!*has_shared_memory) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "'shared_memory_offset' can not be specified without "
+              "'shared_memory_region' parameter for tensor '" +
+              tensor.name() + "'")
+              .c_str());
+    }
+    const auto& infer_param = offset_it->second;
+    if (infer_param.parameter_choice_case() !=
+        InferParameter::ParameterChoiceCase::kInt64Param) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "invalid value type for 'shared_memory_offset' parameter for "
+              "tensor '" +
+              tensor.name() + "', expected int64_param.")
+              .c_str());
+    }
+    *offset = infer_param.int64_param();
+  }
+
+  const auto& bs_it = tensor.parameters().find("shared_memory_byte_size");
+  if (bs_it != tensor.parameters().end()) {
+    if (!*has_shared_memory) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "'shared_memory_byte_size' can not be specified without "
+              "'shared_memory_region' parameter for tensor '" +
+              tensor.name() + "'")
+              .c_str());
+    }
+    const auto& infer_param = bs_it->second;
+    if (infer_param.parameter_choice_case() !=
+        InferParameter::ParameterChoiceCase::kInt64Param) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "invalid value type for 'shared_memory_byte_size' parameter for "
+              "tensor '" +
+              tensor.name() + "', expected int64_param.")
+              .c_str());
+    }
+    *byte_size = infer_param.int64_param();
+  } else {
+    if (*has_shared_memory) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "'shared_memory_byte_size' must be specified along with "
+              "'shared_memory_region' parameter for tensor '" +
+              tensor.name() + "'")
+              .c_str());
+    }
+  }
+
+  return nullptr;
 }
 
 TRTSERVER_Error*
 InferAllocatorPayload(
     const std::shared_ptr<TRTSERVER_Server>& trtserver,
-    const std::shared_ptr<SharedMemoryBlockManager>& smb_manager,
-    const ModelInferRequest& request, ModelInferResponse& response,
-    AllocPayload* alloc_payload)
+    const std::shared_ptr<SharedMemoryManager>& shm_manager,
+    const ModelInferRequest& request,
+    AllocPayload::TensorSerializedDataMap* serialized_data_map,
+    ModelInferResponse& response, AllocPayload* alloc_payload)
 {
   alloc_payload->response_ = &response;
   if (alloc_payload->shm_map_ != nullptr) {
     alloc_payload->shm_map_->clear();
+  }
+  if (alloc_payload->serialized_data_map_ != nullptr) {
+    alloc_payload->serialized_data_map_->clear();
+  }
+  if (!serialized_data_map->empty()) {
+    alloc_payload->serialized_data_map_ = serialized_data_map;
   }
 
   // If any of the outputs use shared memory, then we must calculate
   // the memory address for that output and store it in the allocator
   // payload so that it is available when the allocation callback is
   // invoked.
-#if 0
   for (const auto& io : request.outputs()) {
-    if (io.has_shared_memory()) {
-      void* base;
-      TRTSERVER_SharedMemoryBlock* smb = nullptr;
-      RETURN_IF_ERR(smb_manager->Get(&smb, io.shared_memory().name()));
-      RETURN_IF_ERR(TRTSERVER_ServerSharedMemoryAddress(
-          trtserver.get(), smb, io.shared_memory().offset(),
-          io.shared_memory().byte_size(), &base));
+    std::string region_name;
+    int64_t offset;
+    size_t byte_size;
+    bool has_shared_memory;
 
+    RETURN_IF_ERR(
+        ParseSharedMemoryParams<ModelInferRequest::InferRequestedOutputTensor>(
+            io, &has_shared_memory, &region_name, &offset, &byte_size));
+
+    if (has_shared_memory) {
+      void* base;
       TRTSERVER_Memory_Type memory_type;
       int64_t memory_type_id;
-      TRTSERVER_SharedMemoryBlockMemoryType(smb, &memory_type);
-      TRTSERVER_SharedMemoryBlockMemoryTypeId(smb, &memory_type_id);
+      RETURN_IF_ERR(shm_manager->GetMemoryInfo(
+          region_name, offset, &base, &memory_type, &memory_type_id));
 
       // if shm_map_ does not exist, then create an empty shm_map
       if (alloc_payload->shm_map_ == nullptr) {
@@ -1270,20 +1892,47 @@ InferAllocatorPayload(
       }
 
       alloc_payload->shm_map_->emplace(
-          io.name(), AllocPayload::ShmInfo{base, io.shared_memory().byte_size(),
-                                           memory_type, memory_type_id});
+          io.name(),
+          AllocPayload::ShmInfo{base, byte_size, memory_type, memory_type_id});
     }
   }
-#endif
 
   return nullptr;  // Success
 }
 
 TRTSERVER_Error*
+InferGRPCToInputHelper(
+    const std::string& input_name, const std::string& model_name,
+    const std::string& tensor_dt, const std::string& input_dt,
+    const size_t byte_size)
+{
+  if (input_dt.compare(tensor_dt) != 0) {
+    return TRTSERVER_ErrorNew(
+        TRTSERVER_ERROR_INVALID_ARG,
+        std::string(
+            "unexpected explicit tensor data for input tensor '" + input_name +
+            "' for model '" + model_name + "' of type '" + tensor_dt +
+            "', expected datatype '" + input_dt + "'")
+            .c_str());
+  }
+  if (byte_size != 0) {
+    return TRTSERVER_ErrorNew(
+        TRTSERVER_ERROR_INVALID_ARG,
+        std::string(
+            "unexpected explicit tensor data for input tensor '" + input_name +
+            "' for model '" + model_name +
+            "', binary data was already supplied.")
+            .c_str());
+  }
+  return nullptr;  // success
+}
+
+TRTSERVER_Error*
 InferGRPCToInput(
     const std::shared_ptr<TRTSERVER_Server>& trtserver,
-    const std::shared_ptr<SharedMemoryBlockManager>& smb_manager,
+    const std::shared_ptr<SharedMemoryManager>& shm_manager,
     const ModelInferRequest& request,
+    AllocPayload::TensorSerializedDataMap* serialized_data_map,
     TRTSERVER_InferenceRequestProvider* request_provider)
 {
   // Verify that the batch-byte-size of each input matches the size of
@@ -1293,19 +1942,19 @@ InferGRPCToInput(
     size_t byte_size;
     TRTSERVER_Memory_Type memory_type = TRTSERVER_MEMORY_CPU;
     int64_t memory_type_id = 0;
-#if 0
-    if (io.has_shared_memory()) {
-      TRTSERVER_SharedMemoryBlock* smb = nullptr;
-      RETURN_IF_ERR(smb_manager->Get(&smb, io.shared_memory().name()));
-      RETURN_IF_ERR(TRTSERVER_ServerSharedMemoryAddress(
-          trtserver.get(), smb, io.shared_memory().offset(),
-          io.shared_memory().byte_size(), const_cast<void**>(&base)));
-      byte_size = io.shared_memory().byte_size();
-      TRTSERVER_SharedMemoryBlockMemoryType(smb, &memory_type);
-      TRTSERVER_SharedMemoryBlockMemoryTypeId(smb, &memory_type_id);
-    } else
-#endif
-    {
+
+    std::string region_name;
+    int64_t offset;
+    bool has_shared_memory;
+    RETURN_IF_ERR(ParseSharedMemoryParams<ModelInferRequest::InferInputTensor>(
+        io, &has_shared_memory, &region_name, &offset, &byte_size));
+
+    if (has_shared_memory) {
+      void* tmp;
+      RETURN_IF_ERR(shm_manager->GetMemoryInfo(
+          region_name, offset, &tmp, &memory_type, &memory_type_id));
+      base = tmp;
+    } else {
       if (!io.has_contents()) {
         return TRTSERVER_ErrorNew(
             TRTSERVER_ERROR_INVALID_ARG,
@@ -1315,24 +1964,159 @@ InferGRPCToInput(
                 .c_str());
       }
 
-      // FIXMEV2 handle non-raw content types
+      // Try to read the raw contents if available
       const std::string& raw = io.contents().raw_contents();
       base = raw.c_str();
       byte_size = raw.size();
-    }
 
-    uint64_t expected_byte_size = 0;
-    RETURN_IF_ERR(TRTSERVER_InferenceRequestProviderInputBatchByteSize(
-        request_provider, io.name().c_str(), &expected_byte_size));
+      // Check the presence of explicit tensors
+      const size_t elem_byte_size = GetDataTypeByteSize(io.datatype());
+      if (io.contents().bool_contents_size() != 0) {
+        RETURN_IF_ERR(InferGRPCToInputHelper(
+            io.name(), request.model_name(), "BOOL", io.datatype(), byte_size));
+        base = (const void*)io.contents().bool_contents().data();
+        byte_size = io.contents().bool_contents_size() * elem_byte_size;
+      }
 
-    if (byte_size != expected_byte_size) {
-      return TRTSERVER_ErrorNew(
-          TRTSERVER_ERROR_INVALID_ARG,
-          std::string(
-              "unexpected size " + std::to_string(byte_size) + " for input '" +
-              io.name() + "', expecting " + std::to_string(expected_byte_size) +
-              " for model '" + request.model_name() + "'")
-              .c_str());
+      if (io.contents().int_contents_size() != 0) {
+        if (io.datatype().compare("INT8") == 0) {
+          RETURN_IF_ERR(InferGRPCToInputHelper(
+              io.name(), request.model_name(), "INT8", io.datatype(),
+              byte_size));
+          std::shared_ptr<std::string> serialized(new std::string());
+          serialized->reserve(
+              io.contents().int_contents_size() * elem_byte_size);
+          serialized_data_map->emplace(io.name(), serialized);
+          for (const auto& element : io.contents().int_contents()) {
+            // Assuming the system is little-endian, picking the
+            // least significant byte of 32-bit integer as a
+            // int8 element
+            serialized->append(
+                reinterpret_cast<const char*>(&element), elem_byte_size);
+          }
+          base = serialized->c_str();
+          byte_size = serialized->size();
+        } else if (io.datatype().compare("INT16") == 0) {
+          RETURN_IF_ERR(InferGRPCToInputHelper(
+              io.name(), request.model_name(), "INT16", io.datatype(),
+              byte_size));
+          std::shared_ptr<std::string> serialized(new std::string());
+          serialized->reserve(
+              io.contents().int_contents_size() * elem_byte_size);
+          serialized_data_map->emplace(io.name(), serialized);
+          for (const auto& element : io.contents().int_contents()) {
+            // Assuming the system is little-endian, picking the
+            // least 2 significant bytes of 32-bit integer as a
+            // int16 element
+            serialized->append(
+                reinterpret_cast<const char*>(&element), elem_byte_size);
+          }
+          base = serialized->c_str();
+          byte_size = serialized->size();
+        } else {
+          RETURN_IF_ERR(InferGRPCToInputHelper(
+              io.name(), request.model_name(), "INT32", io.datatype(),
+              byte_size));
+          base = (const void*)io.contents().int_contents().data();
+          byte_size = io.contents().int_contents_size() * elem_byte_size;
+        }
+      }
+
+      if (io.contents().int64_contents_size() != 0) {
+        RETURN_IF_ERR(InferGRPCToInputHelper(
+            io.name(), request.model_name(), "INT64", io.datatype(),
+            byte_size));
+        base = (const void*)io.contents().int64_contents().data();
+        byte_size = io.contents().int64_contents_size() * elem_byte_size;
+      }
+
+      if (io.contents().uint_contents_size() != 0) {
+        if (io.datatype().compare("UINT8") == 0) {
+          RETURN_IF_ERR(InferGRPCToInputHelper(
+              io.name(), request.model_name(), "UINT8", io.datatype(),
+              byte_size));
+          std::shared_ptr<std::string> serialized(new std::string());
+          serialized_data_map->emplace(io.name(), serialized);
+          serialized->reserve(
+              io.contents().uint_contents_size() * elem_byte_size);
+          for (const auto& element : io.contents().uint_contents()) {
+            // Assuming the system is little-endian, picking the
+            // least significant byte of 32-bit unsigned integer as a
+            // uint8 element
+            serialized->append(
+                reinterpret_cast<const char*>(&element), elem_byte_size);
+          }
+          base = serialized->c_str();
+          byte_size = serialized->size();
+        } else if (io.datatype().compare("UINT16") == 0) {
+          RETURN_IF_ERR(InferGRPCToInputHelper(
+              io.name(), request.model_name(), "UINT16", io.datatype(),
+              byte_size));
+          std::shared_ptr<std::string> serialized(new std::string());
+          serialized_data_map->emplace(io.name(), serialized);
+          serialized->reserve(
+              io.contents().uint_contents_size() * elem_byte_size);
+          for (const auto& element : io.contents().uint_contents()) {
+            // Assuming the system is little-endian, picking the
+            // least 2 significant bytes of 32-bit integer as a
+            // uint16 element
+            serialized->append(
+                reinterpret_cast<const char*>(&element), elem_byte_size);
+          }
+          base = serialized->c_str();
+          byte_size = serialized->size();
+        } else {
+          RETURN_IF_ERR(InferGRPCToInputHelper(
+              io.name(), request.model_name(), "UINT32", io.datatype(),
+              byte_size));
+          base = (const void*)io.contents().int_contents().data();
+          byte_size = io.contents().int_contents_size() * elem_byte_size;
+        }
+      }
+
+      if (io.contents().uint64_contents_size() != 0) {
+        RETURN_IF_ERR(InferGRPCToInputHelper(
+            io.name(), request.model_name(), "UINT64", io.datatype(),
+            byte_size));
+        base = (const void*)io.contents().uint64_contents().data();
+        byte_size = io.contents().uint64_contents_size() * elem_byte_size;
+      }
+
+      if (io.contents().fp32_contents_size() != 0) {
+        RETURN_IF_ERR(InferGRPCToInputHelper(
+            io.name(), request.model_name(), "FP32", io.datatype(), byte_size));
+        base = (const void*)io.contents().fp32_contents().data();
+        byte_size = io.contents().fp32_contents_size() * elem_byte_size;
+      }
+
+      if (io.contents().fp64_contents_size() != 0) {
+        RETURN_IF_ERR(InferGRPCToInputHelper(
+            io.name(), request.model_name(), "FP64", io.datatype(), byte_size));
+        base = (const void*)io.contents().fp64_contents().data();
+        byte_size = io.contents().fp64_contents_size() * elem_byte_size;
+      }
+
+      if (io.contents().byte_contents_size() != 0) {
+        RETURN_IF_ERR(InferGRPCToInputHelper(
+            io.name(), request.model_name(), "BYTES", io.datatype(),
+            byte_size));
+        std::shared_ptr<std::string> serialized(new std::string());
+        serialized_data_map->emplace(io.name(), serialized);
+
+        // Serialize the output tensor strings. Each string is
+        // serialized as a 4-byte length followed by the string itself
+        // with no null-terminator.
+        for (const auto& element : io.contents().byte_contents()) {
+          uint32_t len{(uint32_t)element.size()};
+          serialized->append(
+              reinterpret_cast<const char*>(&len), sizeof(uint32_t));
+          if (element.size() > 0) {
+            serialized->append(element.c_str(), len);
+          }
+        }
+        base = serialized->c_str();
+        byte_size = serialized->size();
+      }
     }
 
     RETURN_IF_ERR(TRTSERVER_InferenceRequestProviderSetInputData(
@@ -1356,12 +2140,12 @@ class ModelInferHandler
       const std::string& name,
       const std::shared_ptr<TRTSERVER_Server>& trtserver, const char* server_id,
       const std::shared_ptr<TraceManager>& trace_manager,
-      const std::shared_ptr<SharedMemoryBlockManager>& smb_manager,
+      const std::shared_ptr<SharedMemoryManager>& shm_manager,
       GRPCInferenceService::AsyncService* service,
       grpc::ServerCompletionQueue* cq, size_t max_state_bucket_count)
       : Handler(
             name, trtserver, server_id, service, cq, max_state_bucket_count),
-        trace_manager_(trace_manager), smb_manager_(smb_manager)
+        trace_manager_(trace_manager), shm_manager_(shm_manager)
   {
     // Create the allocator that will be used to allocate buffers for
     // the result tensors.
@@ -1381,7 +2165,7 @@ class ModelInferHandler
       TRTSERVER_InferenceResponse* response, void* userp);
 
   std::shared_ptr<TraceManager> trace_manager_;
-  std::shared_ptr<SharedMemoryBlockManager> smb_manager_;
+  std::shared_ptr<SharedMemoryManager> shm_manager_;
   TRTSERVER_ResponseAllocator* allocator_;
 };
 
@@ -1434,10 +2218,20 @@ ModelInferHandler::Process(Handler::State* state, bool rpc_ok)
   ModelInferResponse& response = state->response_;
 
   if (state->step_ == Steps::START) {
+    int64_t requested_model_version;
+    TRTSERVER_Error* err = GetModelVersionFromString(
+        request.model_version(), &requested_model_version);
 #ifdef TRTIS_ENABLE_TRACING
     if (state->trace_meta_data_ != nullptr) {
-      state->trace_meta_data_->tracer_->SetModel(
-          request.model_name(), request.model_version());
+      if (err == nullptr) {
+        state->trace_meta_data_->tracer_->SetModel(
+            request.model_name(), requested_model_version);
+      } else {
+        // If failed to retrieve the requested_model_version
+        // then use the default model version just to record
+        // the timestamps in the tracer
+        state->trace_meta_data_->tracer_->SetModel(request.model_name(), -1);
+      }
       state->trace_meta_data_->tracer_->CaptureTimestamp(
           TRTSERVER_TRACE_LEVEL_MIN, "grpc wait/read end");
     }
@@ -1447,13 +2241,14 @@ ModelInferHandler::Process(Handler::State* state, bool rpc_ok)
     if (!shutdown) {
       StartNewRequest();
     }
-
     // Create the inference request provider which provides all the
     // input information needed for an inference.
     TRTSERVER_InferenceRequestOptions* request_options = nullptr;
-    TRTSERVER_Error* err = TRTSERVER_InferenceRequestOptionsNew(
-        &request_options, request.model_name().c_str(),
-        request.model_version());
+    if (err == nullptr) {
+      err = TRTSERVER_InferenceRequestOptionsNew(
+          &request_options, request.model_name().c_str(),
+          requested_model_version);
+    }
     if (err == nullptr) {
       err = SetInferenceRequestOptions(request_options, request);
     }
@@ -1464,13 +2259,20 @@ ModelInferHandler::Process(Handler::State* state, bool rpc_ok)
           &request_provider, trtserver_.get(), request_options);
     }
 
+    // Will be used to hold the serialized data in case explicit string
+    // tensors are present in the request.
+    AllocPayload::TensorSerializedDataMap* serialized_data_map =
+        new AllocPayload::TensorSerializedDataMap();
+
     if (err == nullptr) {
-      err =
-          InferGRPCToInput(trtserver_, smb_manager_, request, request_provider);
+      err = InferGRPCToInput(
+          trtserver_, shm_manager_, request, serialized_data_map,
+          request_provider);
     }
     if (err == nullptr) {
       err = InferAllocatorPayload(
-          trtserver_, smb_manager_, request, response, &state->alloc_payload_);
+          trtserver_, shm_manager_, request, serialized_data_map, response,
+          &state->alloc_payload_);
     }
     if (err == nullptr) {
       // Provide the trace manager object to use for this request, if
@@ -1566,20 +2368,45 @@ ModelInferHandler::InferComplete(
     }
   }
 
+  const char* id;
+  if (err == nullptr) {
+    err = TRTSERVER_InferenceResponseIdStr(trtserver_response, &id);
+  }
+
   // Convert the InferResponseHeader to the V2 response
   if (err == nullptr) {
-    response.set_model_name(response_header.model_name());
-    response.set_model_version(response_header.model_version());
-    response.set_id(std::to_string(response_header.id()));
+    response.set_model_version(std::to_string(response_header.model_version()));
+    response.set_id(id);
     for (const auto& io : response_header.output()) {
       // Find the tensor in the response and set its shape.
       for (auto& output : *(response.mutable_outputs())) {
         if (output.name() == io.name()) {
-          for (const auto d : io.raw().dims()) {
-            output.add_shape(d);
-          }
-          // FIXMEV2 Need datatype
+          if (io.batch_classes().size() == 0) {
+            for (const auto d : io.raw().dims()) {
+              output.add_shape(d);
+            }
+            output.set_datatype(DataTypeToProtocolString(io.data_type()));
+          } else {
+            int cls_count = 0;
+            for (const auto& classes : io.batch_classes()) {
+              cls_count = classes.cls().size();
+              for (const auto& cls : classes.cls()) {
+                if (!cls.label().empty()) {
+                  output.mutable_contents()->add_byte_contents(std::string(
+                      std::to_string(cls.idx()) + ":" +
+                      std::to_string(cls.value()) + ":" + cls.label()));
+                } else {
+                  output.mutable_contents()->add_byte_contents(std::string(
+                      std::to_string(cls.idx()) + ":" +
+                      std::to_string(cls.value())));
+                }
+              }
+            }
+            output.add_shape(io.batch_classes().size());
+            output.add_shape(cls_count);
 
+            output.set_datatype("BYTES");
+          }
           break;
         }
       }
@@ -1637,12 +2464,12 @@ class StreamInferHandler
       const std::string& name,
       const std::shared_ptr<TRTSERVER_Server>& trtserver, const char* server_id,
       const std::shared_ptr<TraceManager>& trace_manager,
-      const std::shared_ptr<SharedMemoryBlockManager>& smb_manager,
+      const std::shared_ptr<SharedMemoryManager>& shm_manager,
       GRPCInferenceService::AsyncService* service,
       grpc::ServerCompletionQueue* cq, size_t max_state_bucket_count)
       : Handler(
             name, trtserver, server_id, service, cq, max_state_bucket_count),
-        trace_manager_(trace_manager), smb_manager_(smb_manager)
+        trace_manager_(trace_manager), shm_manager_(shm_manager)
   {
     // Create the allocator that will be used to allocate buffers for
     // the result tensors.
@@ -1662,7 +2489,7 @@ class StreamInferHandler
       TRTSERVER_InferenceResponse* response, void* userp);
 
   std::shared_ptr<TraceManager> trace_manager_;
-  std::shared_ptr<SharedMemoryBlockManager> smb_manager_;
+  std::shared_ptr<SharedMemoryManager> shm_manager_;
   TRTSERVER_ResponseAllocator* allocator_;
 };
 
@@ -1721,10 +2548,21 @@ StreamInferHandler::Process(Handler::State* state, bool rpc_ok)
     state->context_->responder_->Read(&state->request_, state);
 
   } else if (state->step_ == Steps::READ) {
+    int64_t requested_model_version;
+    TRTSERVER_Error* err = GetModelVersionFromString(
+        request.model_version(), &requested_model_version);
 #ifdef TRTIS_ENABLE_TRACING
     if (state->trace_meta_data_ != nullptr) {
-      state->trace_meta_data_->tracer_->SetModel(
-          state->request_.model_name(), state->request_.model_version());
+      if (err == nullptr) {
+        state->trace_meta_data_->tracer_->SetModel(
+            state->request_.model_name(), requested_model_version);
+      } else {
+        // If failed to retrieve the requested_model_version
+        // then use the default model version just to record
+        // the timestamps in the tracer
+        state->trace_meta_data_->tracer_->SetModel(
+            state->request_.model_name(), -1);
+      }
       state->trace_meta_data_->tracer_->CaptureTimestamp(
           TRTSERVER_TRACE_LEVEL_MIN, "grpc wait/read end");
     }
@@ -1767,9 +2605,11 @@ StreamInferHandler::Process(Handler::State* state, bool rpc_ok)
     // Create the inference request provider which provides all the
     // input information needed for an inference.
     TRTSERVER_InferenceRequestOptions* request_options = nullptr;
-    TRTSERVER_Error* err = TRTSERVER_InferenceRequestOptionsNew(
-        &request_options, request.model_name().c_str(),
-        request.model_version());
+    if (err == nullptr) {
+      err = TRTSERVER_InferenceRequestOptionsNew(
+          &request_options, request.model_name().c_str(),
+          requested_model_version);
+    }
     if (err == nullptr) {
       err = SetTRTSERVER_InferenceRequestOptions(
           request_options, request.meta_data());
@@ -1780,15 +2620,20 @@ StreamInferHandler::Process(Handler::State* state, bool rpc_ok)
       err = TRTSERVER_InferenceRequestProviderNewV2(
           &request_provider, trtserver_.get(), request_options);
     }
+
+    // Will be used when GRPC request contains explicit bytes tensors
+    AllocPayload::TensorSerializedDataMap* serialized_data_map =
+        new AllocPayload::TensorSerializedDataMap();
+
     if (err == nullptr) {
       err = InferGRPCToInput(
-          trtserver_, smb_manager_, request.meta_data(), request,
-          request_provider);
+          trtserver_, shm_manager_, request.meta_data(), request,
+          serialized_data_map, request_provider);
     }
     if (err == nullptr) {
       err = InferAllocatorPayload(
-          trtserver_, smb_manager_, request.meta_data(), response,
-          &state->alloc_payload_);
+          trtserver_, shm_manager_, request.meta_data(), serialized_data_map,
+          response, &state->alloc_payload_);
     }
     if (err == nullptr) {
       // Provide the trace manager object to use for this request, if
@@ -1984,365 +2829,6 @@ StreamInferHandler::StreamInferComplete(
   state->step_ = Steps::WRITEREADY;
   state->context_->WriteResponseIfReady(state);
 }
-
-//
-// RepositoryHandler
-//
-class RepositoryHandler
-    : public Handler<
-          GRPCInferenceService::AsyncService,
-          grpc::ServerAsyncResponseWriter<RepositoryResponse>,
-          RepositoryRequest, RepositoryResponse> {
- public:
-  RepositoryHandler(
-      const std::string& name,
-      const std::shared_ptr<TRTSERVER_Server>& trtserver, const char* server_id,
-      GRPCInferenceService::AsyncService* service,
-      grpc::ServerCompletionQueue* cq, size_t max_state_bucket_count)
-      : Handler(name, trtserver, server_id, service, cq, max_state_bucket_count)
-  {
-  }
-
- protected:
-  void StartNewRequest() override;
-  bool Process(State* state, bool rpc_ok) override;
-};
-
-void
-RepositoryHandler::StartNewRequest()
-{
-  auto context = std::make_shared<State::Context>(server_id_);
-  State* state = StateNew(context);
-  service_->RequestRepository(
-      state->context_->ctx_.get(), &state->request_,
-      state->context_->responder_.get(), cq_, cq_, state);
-
-  LOG_VERBOSE(1) << "New request handler for " << Name() << ", "
-                 << state->unique_id_;
-}
-
-bool
-RepositoryHandler::Process(Handler::State* state, bool rpc_ok)
-{
-  LOG_VERBOSE(1) << "Process for " << Name() << ", rpc_ok=" << rpc_ok << ", "
-                 << state->unique_id_ << " step " << state->step_;
-
-  // If RPC failed on a new request then the server is shutting down
-  // and so we should do nothing (including not registering for a new
-  // request). If RPC failed on a non-START step then there is nothing
-  // we can do since we one execute one step.
-  const bool shutdown = (!rpc_ok && (state->step_ == Steps::START));
-  if (shutdown) {
-    state->step_ = Steps::FINISH;
-  }
-
-  const RepositoryRequest& request = state->request_;
-  RepositoryResponse& response = state->response_;
-
-  if (state->step_ == Steps::START) {
-    TRTSERVER_Error* err = nullptr;
-    switch (request.request_type_case()) {
-      case RepositoryRequest::RequestTypeCase::kIndex: {
-        TRTSERVER_Protobuf* repository_index_protobuf = nullptr;
-        err = TRTSERVER_ServerModelRepositoryIndex(
-            trtserver_.get(), &repository_index_protobuf);
-        if (err == nullptr) {
-          const char* serialized_buffer;
-          size_t serialized_byte_size;
-          err = TRTSERVER_ProtobufSerialize(
-              repository_index_protobuf, &serialized_buffer,
-              &serialized_byte_size);
-          if (err == nullptr) {
-            if (!response.mutable_index()->ParseFromArray(
-                    serialized_buffer, serialized_byte_size)) {
-              err = TRTSERVER_ErrorNew(
-                  TRTSERVER_ERROR_UNKNOWN, "failed to parse repository index");
-            }
-          }
-        }
-
-        TRTSERVER_ProtobufDelete(repository_index_protobuf);
-        break;
-      }
-      default:
-        err = TRTSERVER_ErrorNew(
-            TRTSERVER_ERROR_UNKNOWN, "request type is not specified");
-        break;
-    }
-
-    RequestStatusUtil::Create(
-        response.mutable_request_status(), err, state->unique_id_, server_id_);
-
-    TRTSERVER_ErrorDelete(err);
-
-    state->step_ = Steps::COMPLETE;
-    state->context_->responder_->Finish(response, grpc::Status::OK, state);
-  } else if (state->step_ == Steps::COMPLETE) {
-    state->step_ = Steps::FINISH;
-  }
-
-  // Only handle one model repository request at a time (to avoid having
-  // model repository request cause too much load on server),
-  // so register for next request only after this one finished.
-  if (!shutdown && (state->step_ == Steps::FINISH)) {
-    StartNewRequest();
-  }
-
-  return state->step_ != Steps::FINISH;
-}
-
-//
-// ModelControlHandler
-//
-class ModelControlHandler
-    : public Handler<
-          GRPCInferenceService::AsyncService,
-          grpc::ServerAsyncResponseWriter<ModelControlResponse>,
-          ModelControlRequest, ModelControlResponse> {
- public:
-  ModelControlHandler(
-      const std::string& name,
-      const std::shared_ptr<TRTSERVER_Server>& trtserver, const char* server_id,
-      GRPCInferenceService::AsyncService* service,
-      grpc::ServerCompletionQueue* cq, size_t max_state_bucket_count)
-      : Handler(name, trtserver, server_id, service, cq, max_state_bucket_count)
-  {
-  }
-
- protected:
-  void StartNewRequest() override;
-  bool Process(State* state, bool rpc_ok) override;
-};
-
-void
-ModelControlHandler::StartNewRequest()
-{
-  auto context = std::make_shared<State::Context>(server_id_);
-  State* state = StateNew(context);
-  service_->RequestModelControl(
-      state->context_->ctx_.get(), &state->request_,
-      state->context_->responder_.get(), cq_, cq_, state);
-
-  LOG_VERBOSE(1) << "New request handler for " << Name() << ", "
-                 << state->unique_id_;
-}
-
-bool
-ModelControlHandler::Process(Handler::State* state, bool rpc_ok)
-{
-  LOG_VERBOSE(1) << "Process for " << Name() << ", rpc_ok=" << rpc_ok << ", "
-                 << state->unique_id_ << " step " << state->step_;
-
-  // If RPC failed on a new request then the server is shutting down
-  // and so we should do nothing (including not registering for a new
-  // request). If RPC failed on a non-START step then there is nothing
-  // we can do since we one execute one step.
-  const bool shutdown = (!rpc_ok && (state->step_ == Steps::START));
-  if (shutdown) {
-    state->step_ = Steps::FINISH;
-  }
-
-  const ModelControlRequest& request = state->request_;
-  ModelControlResponse& response = state->response_;
-
-  if (state->step_ == START) {
-    TRTSERVER_Error* err = nullptr;
-    if (request.type() == ModelControlRequest::LOAD) {
-      err = TRTSERVER_ServerLoadModel(
-          trtserver_.get(), request.model_name().c_str());
-    } else {
-      err = TRTSERVER_ServerUnloadModel(
-          trtserver_.get(), request.model_name().c_str());
-    }
-
-    RequestStatusUtil::Create(
-        response.mutable_request_status(), err, state->unique_id_, server_id_);
-
-    TRTSERVER_ErrorDelete(err);
-
-    state->step_ = Steps::COMPLETE;
-    state->context_->responder_->Finish(response, grpc::Status::OK, state);
-  } else if (state->step_ == Steps::COMPLETE) {
-    state->step_ = Steps::FINISH;
-  }
-
-  // Only handle one status request at a time (to avoid having status
-  // request cause too much load on server), so register for next
-  // request only after this one finished.
-  if (!shutdown && (state->step_ == Steps::FINISH)) {
-    StartNewRequest();
-  }
-
-  return state->step_ != Steps::FINISH;
-}
-
-//
-// SharedMemoryControlHandler
-//
-class SharedMemoryControlHandler
-    : public Handler<
-          GRPCInferenceService::AsyncService,
-          grpc::ServerAsyncResponseWriter<SharedMemoryControlResponse>,
-          SharedMemoryControlRequest, SharedMemoryControlResponse> {
- public:
-  SharedMemoryControlHandler(
-      const std::string& name,
-      const std::shared_ptr<TRTSERVER_Server>& trtserver, const char* server_id,
-      const std::shared_ptr<SharedMemoryBlockManager>& smb_manager,
-      GRPCInferenceService::AsyncService* service,
-      grpc::ServerCompletionQueue* cq, size_t max_state_bucket_count)
-      : Handler(
-            name, trtserver, server_id, service, cq, max_state_bucket_count),
-        smb_manager_(smb_manager)
-  {
-  }
-
- protected:
-  void StartNewRequest() override;
-  bool Process(State* state, bool rpc_ok) override;
-
- private:
-  std::shared_ptr<SharedMemoryBlockManager> smb_manager_;
-};
-
-void
-SharedMemoryControlHandler::StartNewRequest()
-{
-  auto context = std::make_shared<State::Context>(server_id_);
-  State* state = StateNew(context);
-  service_->RequestSharedMemoryControl(
-      state->context_->ctx_.get(), &state->request_,
-      state->context_->responder_.get(), cq_, cq_, state);
-
-  LOG_VERBOSE(1) << "New request handler for " << Name() << ", "
-                 << state->unique_id_;
-}
-
-bool
-SharedMemoryControlHandler::Process(Handler::State* state, bool rpc_ok)
-{
-  LOG_VERBOSE(1) << "Process for " << Name() << ", rpc_ok=" << rpc_ok << ", "
-                 << state->unique_id_ << " step " << state->step_;
-
-  // If RPC failed on a new request then the server is shutting down
-  // and so we should do nothing (including not registering for a new
-  // request). If RPC failed on a non-START step then there is nothing
-  // we can do since we one execute one step.
-  const bool shutdown = (!rpc_ok && (state->step_ == Steps::START));
-  if (shutdown) {
-    state->step_ = Steps::FINISH;
-  }
-
-  const SharedMemoryControlRequest& request = state->request_;
-  SharedMemoryControlResponse& response = state->response_;
-
-  if (state->step_ == START) {
-    TRTSERVER_SharedMemoryBlock* smb = nullptr;
-
-    TRTSERVER_Error* err = nullptr;
-    if (request.has_register_()) {
-      if (request.register_().has_system_shared_memory()) {
-        // system shared memory
-        err = smb_manager_->CpuCreate(
-            &smb, request.register_().name(),
-            request.register_().system_shared_memory().shared_memory_key(),
-            request.register_().system_shared_memory().offset(),
-            request.register_().byte_size());
-        if (err == nullptr) {
-          err = TRTSERVER_ServerRegisterSharedMemory(trtserver_.get(), smb);
-        }
-      } else if (request.register_().has_cuda_shared_memory()) {
-        // cuda shared memory
-#ifdef TRTIS_ENABLE_GPU
-        const std::string& raw_handle =
-            request.register_().cuda_shared_memory().raw_handle();
-        char* handle_base = const_cast<char*>(raw_handle.c_str());
-        cudaIpcMemHandle_t* cuda_shm_handle =
-            reinterpret_cast<cudaIpcMemHandle_t*>(handle_base);
-        err = smb_manager_->GpuCreate(
-            &smb, request.register_().name(), cuda_shm_handle,
-            request.register_().byte_size(),
-            request.register_().cuda_shared_memory().device_id());
-        if (err == nullptr) {
-          err = TRTSERVER_ServerRegisterSharedMemory(trtserver_.get(), smb);
-        }
-#else
-        err = TRTSERVER_ErrorNew(
-            TRTSERVER_ERROR_INVALID_ARG,
-            std::string(
-                "failed to register CUDA shared memory region: '" +
-                request.register_().name() + "', GPUs not supported")
-                .c_str());
-#endif  // TRTIS_ENABLE_GPU
-      } else {
-        err = TRTSERVER_ErrorNew(
-            TRTSERVER_ERROR_INVALID_ARG,
-            std::string(
-                "failed to register shared memory region: '" +
-                request.register_().name() + "', improperly formed request.")
-                .c_str());
-      }
-    } else if (request.has_unregister()) {
-      err = smb_manager_->Remove(&smb, request.unregister().name());
-      if ((err == nullptr) && (smb != nullptr)) {
-        err = TRTSERVER_ServerUnregisterSharedMemory(trtserver_.get(), smb);
-        TRTSERVER_Error* del_err = TRTSERVER_SharedMemoryBlockDelete(smb);
-        if (del_err != nullptr) {
-          LOG_ERROR << "failed to delete shared memory block: "
-                    << TRTSERVER_ErrorMessage(del_err);
-          TRTSERVER_ErrorDelete(del_err);
-        }
-      }
-    } else if (request.has_unregister_all()) {
-      err = smb_manager_->Clear();
-      if (err == nullptr) {
-        err = TRTSERVER_ServerUnregisterAllSharedMemory(trtserver_.get());
-      }
-    } else if (request.has_status()) {
-      TRTSERVER_Protobuf* shm_status_protobuf = nullptr;
-      err = TRTSERVER_ServerSharedMemoryStatus(
-          trtserver_.get(), &shm_status_protobuf);
-      if (err == nullptr) {
-        const char* status_buffer;
-        size_t status_byte_size;
-        err = TRTSERVER_ProtobufSerialize(
-            shm_status_protobuf, &status_buffer, &status_byte_size);
-        auto shm_status_response = response.mutable_shared_memory_status();
-        if (err == nullptr) {
-          if (!shm_status_response->ParseFromArray(
-                  status_buffer, status_byte_size)) {
-            err = TRTSERVER_ErrorNew(
-                TRTSERVER_ERROR_INTERNAL,
-                "failed to parse shared memory status");
-          }
-        }
-      }
-      TRTSERVER_ProtobufDelete(shm_status_protobuf);
-    } else {
-      err = TRTSERVER_ErrorNew(
-          TRTSERVER_ERROR_UNKNOWN, "unknown sharedmemorycontrol request type");
-    }
-
-    RequestStatusUtil::Create(
-        response.mutable_request_status(), err, state->unique_id_, server_id_);
-
-    TRTSERVER_ErrorDelete(err);
-
-    state->step_ = Steps::COMPLETE;
-    state->context_->responder_->Finish(response, grpc::Status::OK, state);
-  } else if (state->step_ == Steps::COMPLETE) {
-    state->step_ = Steps::FINISH;
-  }
-
-  // Only handle one status request at a time (to avoid having status
-  // request cause too much load on server), so register for next
-  // request only after this one finished.
-  if (!shutdown && (state->step_ == Steps::FINISH)) {
-    StartNewRequest();
-  }
-
-  return state->step_ != Steps::FINISH;
-}
 #endif
 
 }  // namespace
@@ -2353,10 +2839,10 @@ SharedMemoryControlHandler::Process(Handler::State* state, bool rpc_ok)
 GRPCServerV2::GRPCServerV2(
     const std::shared_ptr<TRTSERVER_Server>& server,
     const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
-    const std::shared_ptr<SharedMemoryBlockManager>& smb_manager,
+    const std::shared_ptr<SharedMemoryManager>& shm_manager,
     const char* server_id, const std::string& server_addr,
     const int infer_allocation_pool_size)
-    : server_(server), trace_manager_(trace_manager), smb_manager_(smb_manager),
+    : server_(server), trace_manager_(trace_manager), shm_manager_(shm_manager),
       server_id_(server_id), server_addr_(server_addr),
       infer_allocation_pool_size_(infer_allocation_pool_size), running_(false)
 {
@@ -2371,7 +2857,7 @@ TRTSERVER_Error*
 GRPCServerV2::Create(
     const std::shared_ptr<TRTSERVER_Server>& server,
     const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
-    const std::shared_ptr<SharedMemoryBlockManager>& smb_manager, int32_t port,
+    const std::shared_ptr<SharedMemoryManager>& shm_manager, int32_t port,
     int infer_allocation_pool_size, std::unique_ptr<GRPCServerV2>* grpc_server)
 {
   const char* server_id = nullptr;
@@ -2383,7 +2869,7 @@ GRPCServerV2::Create(
 
   const std::string addr = "0.0.0.0:" + std::to_string(port);
   grpc_server->reset(new GRPCServerV2(
-      server, trace_manager, smb_manager, server_id, addr,
+      server, trace_manager, shm_manager, server_id, addr,
       infer_allocation_pool_size));
 
   return nullptr;  // success
@@ -2408,11 +2894,9 @@ GRPCServerV2::Start()
   model_metadata_cq_ = grpc_builder_.AddCompletionQueue();
   model_config_cq_ = grpc_builder_.AddCompletionQueue();
   model_infer_cq_ = grpc_builder_.AddCompletionQueue();
+  common_cq_ = grpc_builder_.AddCompletionQueue();
 #if 0
   stream_infer_cq_ = grpc_builder_.AddCompletionQueue();
-  repository_cq_ = grpc_builder_.AddCompletionQueue();
-  modelcontrol_cq_ = grpc_builder_.AddCompletionQueue();
-  shmcontrol_cq_ = grpc_builder_.AddCompletionQueue();
 #endif
   grpc_server_ = grpc_builder_.BuildAndStart();
 
@@ -2460,41 +2944,27 @@ GRPCServerV2::Start()
 
   // Handler for model inference requests.
   ModelInferHandler* hmodelinfer = new ModelInferHandler(
-      "ModelInferHandler", server_, server_id_, trace_manager_, smb_manager_,
+      "ModelInferHandler", server_, server_id_, trace_manager_, shm_manager_,
       &service_, model_infer_cq_.get(),
       infer_allocation_pool_size_ /* max_state_bucket_count */);
   hmodelinfer->Start();
   model_infer_handler_.reset(hmodelinfer);
 
+  // A common Handler for other non-critical requests
+  CommonHandler* hcommon = new CommonHandler(
+      "CommonHandler", server_, server_id_, shm_manager_, &service_,
+      common_cq_.get());
+  hcommon->Start();
+  common_handler_.reset(hcommon);
+
 #if 0
   // Handler for streaming inference requests.
   StreamInferHandler* hstreaminfer = new StreamInferHandler(
-      "StreamInferHandler", server_, server_id_, trace_manager_, smb_manager_,
+      "StreamInferHandler", server_, server_id_, trace_manager_, shm_manager_,
       &service_, stream_infer_cq_.get(),
       infer_allocation_pool_size_ /* max_state_bucket_count */);
   hstreaminfer->Start();
   stream_infer_handler_.reset(hstreaminfer);
-
-  // Handler for status requests.
-  RepositoryHandler* hrepository = new RepositoryHandler(
-      "RepositoryHandler", server_, server_id_, &service_, repository_cq_.get(),
-      2 /* max_state_bucket_count */);
-  hrepository->Start();
-  repository_handler_.reset(hrepository);
-
-  // Handler for model-control requests.
-  ModelControlHandler* hmodelcontrol = new ModelControlHandler(
-      "ModelControlHandler", server_, server_id_, &service_,
-      modelcontrol_cq_.get(), 2 /* max_state_bucket_count */);
-  hmodelcontrol->Start();
-  modelcontrol_handler_.reset(hmodelcontrol);
-
-  // Handler for shared-memory-control requests.
-  SharedMemoryControlHandler* hshmcontrol = new SharedMemoryControlHandler(
-      "SharedMemoryControlHandler", server_, server_id_, smb_manager_,
-      &service_, shmcontrol_cq_.get(), 2 /* max_state_bucket_count */);
-  hshmcontrol->Start();
-  shmcontrol_handler_.reset(hshmcontrol);
 #endif
 
   running_ = true;
@@ -2520,11 +2990,9 @@ GRPCServerV2::Stop()
   model_metadata_cq_->Shutdown();
   model_config_cq_->Shutdown();
   model_infer_cq_->Shutdown();
+  common_cq_->Shutdown();
 #if 0
-  repository_cq_->Shutdown();
   stream_infer_cq_->Shutdown();
-  modelcontrol_cq_->Shutdown();
-  shmcontrol_cq_->Shutdown();
 #endif
 
   // Must stop all handlers explicitly to wait for all the handler
@@ -2536,11 +3004,9 @@ GRPCServerV2::Stop()
   dynamic_cast<ModelMetadataHandler*>(model_metadata_handler_.get())->Stop();
   dynamic_cast<ModelConfigHandler*>(model_config_handler_.get())->Stop();
   dynamic_cast<ModelInferHandler*>(model_infer_handler_.get())->Stop();
+  dynamic_cast<CommonHandler*>(common_handler_.get())->Stop();
 #if 0
   dynamic_cast<StreamInferHandler*>(stream_infer_handler_.get())->Stop();
-  dynamic_cast<RepositoryHandler*>(repository_handler_.get())->Stop();
-  dynamic_cast<ModelControlHandler*>(modelcontrol_handler_.get())->Stop();
-  dynamic_cast<SharedMemoryControlHandler*>(shmcontrol_handler_.get())->Stop();
 #endif
 
   running_ = false;

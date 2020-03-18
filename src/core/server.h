@@ -39,7 +39,6 @@
 #include "src/core/provider.h"
 #include "src/core/server_status.h"
 #include "src/core/server_status.pb.h"
-#include "src/core/shared_memory_manager.h"
 #include "src/core/status.h"
 
 namespace nvidia { namespace inferenceserver {
@@ -92,34 +91,6 @@ class InferenceServer {
   // Unload the corresponding model.
   Status UnloadModel(const std::string& model_name);
 
-  // Register the corresponding system shared memory region. If already
-  // registered return an ALREADY_EXISTS error.
-  Status RegisterSharedMemory(
-      const std::string& name, const std::string& shm_key, const size_t offset,
-      const size_t byte_size);
-
-  // Register the corresponding CUDA shared memory region. If already
-  // registered return an ALREADY_EXISTS error.
-#ifdef TRTIS_ENABLE_GPU
-  Status RegisterCudaSharedMemory(
-      const std::string& name, const cudaIpcMemHandle_t* cuda_shm_handle,
-      const size_t byte_size, const int device_id);
-#endif  // TRTIS_ENABLE_GPU
-
-  // Unregister the corresponding shared memory region.
-  Status UnregisterSharedMemory(const std::string& name);
-
-  // Unregister all active shared memory regions.
-  Status UnregisterAllSharedMemory();
-
-  // Get the address at 'offset' within a shared memory region.
-  Status SharedMemoryAddress(
-      const std::string& name, size_t offset, size_t byte_size,
-      void** shm_mapped_addr);
-
-  // Get list of active shared memory regions.
-  Status GetSharedMemoryStatus(SharedMemoryStatus* shm_status);
-
   // Return the ready state for the server.
   ServerReadyState ReadyState() const { return ready_state_; }
 
@@ -165,6 +136,27 @@ class InferenceServer {
   void SetPinnedMemoryPoolByteSize(int64_t s)
   {
     pinned_memory_pool_size_ = std::max((int64_t)0, s);
+  }
+
+  // Get / set CUDA memory pool size
+  const std::map<int, uint64_t>& CudaMemoryPoolByteSize() const
+  {
+    return cuda_memory_pool_size_;
+  }
+
+  void SetCudaMemoryPoolByteSize(const std::map<int, uint64_t>& s)
+  {
+    cuda_memory_pool_size_ = s;
+  }
+
+  // Get / set the minimum support CUDA compute capability.
+  double MinSupportedComputeCapability() const
+  {
+    return min_supported_compute_capability_;
+  }
+  void SetMinSupportedComputeCapability(double c)
+  {
+    min_supported_compute_capability_ = c;
   }
 
   // Get / set strict readiness enable.
@@ -235,6 +227,8 @@ class InferenceServer {
   bool strict_readiness_;
   uint32_t exit_timeout_secs_;
   uint64_t pinned_memory_pool_size_;
+  std::map<int, uint64_t> cuda_memory_pool_size_;
+  double min_supported_compute_capability_;
 
   // Tensorflow options
   bool tf_soft_placement_enabled_;
@@ -250,7 +244,6 @@ class InferenceServer {
 
   std::shared_ptr<ServerStatusManager> status_manager_;
   std::unique_ptr<ModelRepositoryManager> model_repository_manager_;
-  std::unique_ptr<SharedMemoryManager> shared_memory_manager_;
 };
 
 }}  // namespace nvidia::inferenceserver

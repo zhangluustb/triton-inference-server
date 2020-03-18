@@ -75,8 +75,14 @@ RUN mkdir -p qa/common && \
     cp -r docs/examples/model_repository/simple qa/L0_cuda_shared_memory/models/. && \
     mkdir qa/L0_cmdline_trace/models && \
     cp -r docs/examples/model_repository/simple qa/L0_cmdline_trace/models/. && \
+    mkdir qa/L0_grpc_v2/models && \
+    cp -r /workspace/docs/examples/model_repository/simple qa/L0_grpc_v2/models && \
+    cp -r /workspace/docs/examples/model_repository/simple_string qa/L0_grpc_v2/models && \
+    cp -r /workspace/docs/examples/model_repository/inception_graphdef qa/L0_grpc_v2/models && \
     cp /opt/tensorrtserver/bin/simple qa/L0_simple_lib/. && \
-    cp /opt/tensorrtserver/bin/memory_alloc qa/L0_io/.
+    cp /opt/tensorrtserver/bin/simplev2 qa/L0_simple_lib/. && \
+    cp /opt/tensorrtserver/bin/memory_alloc qa/L0_io/. && \
+    cp /workspace/builddir/trtis-test-utils/install/bin/memory_test qa/L0_memory/.
 
 RUN cp /workspace/builddir/trtis-test-utils/install/bin/caffe2plan qa/common/.
 
@@ -116,6 +122,9 @@ RUN mkdir -p qa/L0_custom_param/models/param/1 && \
 RUN mkdir -p qa/L0_simple_sequence_example/models/simple_sequence/1 && \
     cp builddir/trtis-custom-backends/install/lib/libsequence.so \
         qa/L0_simple_sequence_example/models/simple_sequence/1/. && \
+    mkdir -p qa/L0_simple_sequence_example/models_dyna/simple_sequence/1 && \
+    cp builddir/trtis-custom-backends/install/lib/libdyna_sequence.so \
+        qa/L0_simple_sequence_example/models_dyna/simple_sequence/1/. && \
     mkdir -p qa/L0_backend_release/simple_seq_models/simple_sequence/1 && \
     cp builddir/trtis-custom-backends/install/lib/libsequence.so \
         qa/L0_backend_release/simple_seq_models/simple_sequence/1/. && \
@@ -152,6 +161,8 @@ RUN cp builddir/trtis-custom-backends/install/lib/libidentity.so \
         qa/L0_large_payload/. && \
     cp builddir/trtis-custom-backends/install/lib/libidentity.so \
         qa/L0_model_config/. && \
+    cp builddir/trtis-custom-backends/install/lib/libidentity.so \
+        qa/L0_model_queue/. && \
     cp builddir/trtis-custom-backends/install/lib/libidentity.so \
         qa/L0_simple_lib/. && \
     cp builddir/trtis-custom-backends/install/lib/libidentity.so \
@@ -199,7 +210,8 @@ RUN mkdir -p qa/clients && mkdir -p qa/pkgs && \
     cp install/bin/* qa/clients/. && \
     cp install/lib/librequest.so qa/clients/. && \
     cp install/python/*.py qa/clients/. && \
-    cp install/python/tensorrtserver*.whl qa/pkgs/.
+    cp install/python/tensorrtserver*.whl qa/pkgs/. && \
+    cp install/python/triton*.whl qa/pkgs/.
 
 ############################################################################
 ## Copy artifacts from custom backend container
@@ -236,6 +248,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
                               curl \
                               jmeter \
                               jmeter-http \
+                              libb64-dev \
                               libopencv-dev \
                               libopencv-core-dev \
                               libzmq3-dev \
@@ -258,8 +271,9 @@ WORKDIR /opt/tensorrtserver
 COPY --chown=1000:1000 --from=cbe /workspace/qa/ qa/
 
 # Remove CI tests that are meant to run only on build image and
-# install the tensorrtserver python client APIs.
+# install the tensorrtserver/triton python client APIs.
 RUN rm -fr qa/L0_copyrights qa/L0_build_variants && \
-    pip3 install --upgrade qa/pkgs/tensorrtserver*.whl
+    pip3 install --upgrade qa/pkgs/tensorrtserver*.whl && \
+    pip3 install --upgrade qa/pkgs/triton*.whl
 
 ENV LD_LIBRARY_PATH /opt/tensorrtserver/qa/clients:${LD_LIBRARY_PATH}

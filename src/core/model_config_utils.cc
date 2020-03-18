@@ -30,6 +30,7 @@
 #include <set>
 #include "src/core/autofill.h"
 #include "src/core/constants.h"
+#include "src/core/cuda_utils.h"
 #include "src/core/filesystem.h"
 #include "src/core/logging.h"
 
@@ -38,6 +39,35 @@
 #endif  // TRTIS_ENABLE_GPU
 
 namespace nvidia { namespace inferenceserver {
+
+Status
+GetModelVersionFromString(const std::string& version_string, int64_t* version)
+{
+  if (version_string.empty()) {
+    *version = -1;
+    return Status::Success;
+  }
+
+  try {
+    *version = std::stol(version_string);
+  }
+  catch (std::exception& e) {
+    return Status(
+        RequestStatusCode::INVALID_ARG,
+        "failed to get model version from specified version string '" +
+            version_string + "' (details: " + e.what() +
+            "), version should be an integral value > 0");
+  }
+
+  if (*version < 0) {
+    return Status(
+        RequestStatusCode::INVALID_ARG,
+        "invalid model version specified '" + version_string +
+            "' , version should be an integral value > 0");
+  }
+
+  return Status::Success;
+}
 
 Status
 GetModelVersionFromPath(const std::string& path, int64_t* version)
@@ -253,7 +283,8 @@ GetTypedSequenceControlProperties(
 Status
 GetNormalizedModelConfig(
     const std::string& path, const BackendConfigMap& backend_config_map,
-    const bool autofill, ModelConfig* config)
+    const bool autofill, const double min_compute_capability,
+    ModelConfig* config)
 {
   // If 'autofill' then the configuration file can be empty.
   const auto config_path = JoinPath({path, kModelConfigPbTxt});
@@ -381,7 +412,7 @@ GetNormalizedModelConfig(
     std::set<int> supported_gpus;
 #ifdef TRTIS_ENABLE_GPU
     // Get the total number of GPUs from the runtime library.
-    Status status = GetSupportedGPUs(supported_gpus);
+    Status status = GetSupportedGPUs(&supported_gpus, min_compute_capability);
     if (!status.IsOk()) {
       return status;
     }
@@ -438,7 +469,8 @@ GetNormalizedModelConfig(
 
 Status
 ValidateModelConfig(
-    const ModelConfig& config, const std::string& expected_platform)
+    const ModelConfig& config, const std::string& expected_platform,
+    const double min_compute_capability)
 {
   if (config.name().empty()) {
     return Status(
@@ -508,6 +540,63 @@ ValidateModelConfig(
             RequestStatusCode::INVALID_ARG,
             "dynamic batching preferred size must be <= max batch size for " +
                 config.name());
+      }
+    }
+
+    // Priority queue is specified
+    const auto priority_levels = config.dynamic_batching().priority_levels();
+    if (priority_levels != 0) {
+      if ((config.dynamic_batching().default_priority_level() == 0) ||
+          (config.dynamic_batching().default_priority_level() >
+           priority_levels)) {
+        return Status(
+            RequestStatusCode::INVALID_ARG,
+            "default priority level must be in range [1, " +
+                std::to_string(priority_levels) + "] for " + config.name());
+      }
+      for (const auto& queue_policy :
+           config.dynamic_batching().priority_queue_policy()) {
+        if ((queue_policy.first == 0) ||
+            (queue_policy.first > priority_levels)) {
+          return Status(
+              RequestStatusCode::INVALID_ARG,
+              "priority queue policy must have priority level in range [1, " +
+                  std::to_string(priority_levels) + "] for " + config.name());
+        }
+      }
+    }
+
+    // preserve ordering option will conflict with priorities and delay policy
+    if (config.dynamic_batching().preserve_ordering()) {
+      if (priority_levels > 1) {
+        return Status(
+            RequestStatusCode::INVALID_ARG,
+            "Only one priority level is allowed when 'preserve_ordering' is "
+            "true for " +
+                config.name());
+      }
+      const auto& default_policy =
+          config.dynamic_batching().default_queue_policy();
+      if ((default_policy.default_timeout_microseconds() != 0) &&
+          (default_policy.timeout_action() == ModelQueuePolicy::DELAY)) {
+        return Status(
+            RequestStatusCode::INVALID_ARG,
+            "Queue policy can not have DELAY as timeout action when "
+            "'preserve_ordering' is true for " +
+                config.name());
+      }
+      // Also need to check policy in 'priority_queue_policy'
+      // for single priority case
+      for (const auto& policy :
+           config.dynamic_batching().priority_queue_policy()) {
+        if ((policy.second.default_timeout_microseconds() != 0) &&
+            (policy.second.timeout_action() == ModelQueuePolicy::DELAY)) {
+          return Status(
+              RequestStatusCode::INVALID_ARG,
+              "Queue policy can not have DELAY as timeout action when "
+              "'preserve_ordering' is true for " +
+                  config.name());
+        }
       }
     }
   }
@@ -607,7 +696,7 @@ ValidateModelConfig(
     // not specify any GPUs.
 #ifdef TRTIS_ENABLE_GPU
     std::set<int> supported_gpus;
-    Status status = GetSupportedGPUs(supported_gpus);
+    Status status = GetSupportedGPUs(&supported_gpus, min_compute_capability);
     if (!status.IsOk()) {
       return status;
     }
@@ -715,6 +804,107 @@ ValidateModelConfig(
   return Status::Success;
 }
 
+namespace {
+
+struct EnsembleTensor {
+  EnsembleTensor(bool isOutput) : ready(false), isOutput(isOutput) {}
+  bool ready;
+  bool isOutput;
+  std::vector<EnsembleTensor*> prev_nodes;
+  std::vector<EnsembleTensor*> next_nodes;
+};
+
+/// Build a graph that represents the data flow in the ensemble specified in
+/// given model config. the node (ensemble tensor) in the graph can be looked
+/// up using its name as key.
+/// \param ensemble_config The model configuration that specifies
+/// ensemble_scheduling field.
+/// \param keyed_ensemble_graph Returned the ensemble graph.
+/// \return The error status. A non-OK status indicates the build fails because
+/// the ensemble configuration is not valid.
+Status
+BuildEnsembleGraph(
+    const ModelConfig& config,
+    std::unordered_map<std::string, EnsembleTensor>& keyed_ensemble_graph)
+{
+  keyed_ensemble_graph.clear();
+  size_t step_idx = 0;
+  for (const auto& element : config.ensemble_scheduling().step()) {
+    if (element.model_name().empty()) {
+      return Status(
+          RequestStatusCode::INVALID_ARG,
+          "must specify 'model_name' in step " + std::to_string(step_idx) +
+              " of ensemble '" + config.name() + "'");
+    }
+    if (element.input_map().size() == 0) {
+      return Status(
+          RequestStatusCode::INVALID_ARG,
+          "must specify 'input_map' in step " + std::to_string(step_idx) +
+              " of ensemble '" + config.name() + "'");
+    }
+    if (element.output_map().size() == 0) {
+      return Status(
+          RequestStatusCode::INVALID_ARG,
+          "must specify 'output_map' in step " + std::to_string(step_idx) +
+              " of ensemble '" + config.name() + "'");
+    }
+
+    // Link ensemble tensors
+    std::vector<EnsembleTensor*> tensor_as_output;
+    for (const auto& output_map : element.output_map()) {
+      auto it = keyed_ensemble_graph.find(output_map.second);
+      if (it != keyed_ensemble_graph.end()) {
+        if (it->second.isOutput) {
+          return Status(
+              RequestStatusCode::INVALID_ARG,
+              "ensemble tensor '" + it->first +
+                  "' can appear in an output map only once for ensemble '" +
+                  config.name() + "' step " + std::to_string(step_idx));
+        } else {
+          it->second.isOutput = true;
+        }
+      } else {
+        it = keyed_ensemble_graph
+                 .emplace(
+                     std::make_pair(output_map.second, EnsembleTensor(true)))
+                 .first;
+      }
+      tensor_as_output.push_back(&(it->second));
+    }
+
+    std::set<std::string> model_inputs;
+    for (const auto& input_map : element.input_map()) {
+      if (model_inputs.find(input_map.first) != model_inputs.end()) {
+        return Status(
+            RequestStatusCode::INVALID_ARG,
+            "input '" + input_map.first + "' in model '" +
+                element.model_name() +
+                "' is mapped to multiple ensemble tensors for ensemble '" +
+                config.name() + "' step " + std::to_string(step_idx));
+      } else {
+        model_inputs.emplace(input_map.first);
+      }
+      auto it = keyed_ensemble_graph.find(input_map.second);
+      if (it == keyed_ensemble_graph.end()) {
+        it = keyed_ensemble_graph
+                 .emplace(
+                     std::make_pair(input_map.second, EnsembleTensor(false)))
+                 .first;
+      }
+      for (auto output : tensor_as_output) {
+        output->prev_nodes.push_back(&(it->second));
+        it->second.next_nodes.push_back(output);
+      }
+    }
+
+    step_idx++;
+  }
+
+  return Status::Success;
+}
+
+}  // namespace
+
 Status
 ValidateEnsembleSchedulingConfig(const ModelConfig& config)
 {
@@ -819,87 +1009,6 @@ ValidateEnsembleSchedulingConfig(const ModelConfig& config)
                                               config.name() + "'");
     }
   }
-  return Status::Success;
-}
-
-Status
-BuildEnsembleGraph(
-    const ModelConfig& config,
-    std::unordered_map<std::string, EnsembleTensor>& keyed_ensemble_graph)
-{
-  keyed_ensemble_graph.clear();
-  size_t step_idx = 0;
-  for (const auto& element : config.ensemble_scheduling().step()) {
-    if (element.model_name().empty()) {
-      return Status(
-          RequestStatusCode::INVALID_ARG,
-          "must specify 'model_name' in step " + std::to_string(step_idx) +
-              " of ensemble '" + config.name() + "'");
-    }
-    if (element.input_map().size() == 0) {
-      return Status(
-          RequestStatusCode::INVALID_ARG,
-          "must specify 'input_map' in step " + std::to_string(step_idx) +
-              " of ensemble '" + config.name() + "'");
-    }
-    if (element.output_map().size() == 0) {
-      return Status(
-          RequestStatusCode::INVALID_ARG,
-          "must specify 'output_map' in step " + std::to_string(step_idx) +
-              " of ensemble '" + config.name() + "'");
-    }
-
-    // Link ensemble tensors
-    std::vector<EnsembleTensor*> tensor_as_output;
-    for (const auto& output_map : element.output_map()) {
-      auto it = keyed_ensemble_graph.find(output_map.second);
-      if (it != keyed_ensemble_graph.end()) {
-        if (it->second.isOutput) {
-          return Status(
-              RequestStatusCode::INVALID_ARG,
-              "ensemble tensor '" + it->first +
-                  "' can appear in an output map only once for ensemble '" +
-                  config.name() + "' step " + std::to_string(step_idx));
-        } else {
-          it->second.isOutput = true;
-        }
-      } else {
-        it = keyed_ensemble_graph
-                 .emplace(
-                     std::make_pair(output_map.second, EnsembleTensor(true)))
-                 .first;
-      }
-      tensor_as_output.push_back(&(it->second));
-    }
-
-    std::set<std::string> model_inputs;
-    for (const auto& input_map : element.input_map()) {
-      if (model_inputs.find(input_map.first) != model_inputs.end()) {
-        return Status(
-            RequestStatusCode::INVALID_ARG,
-            "input '" + input_map.first + "' in model '" +
-                element.model_name() +
-                "' is mapped to multiple ensemble tensors for ensemble '" +
-                config.name() + "' step " + std::to_string(step_idx));
-      } else {
-        model_inputs.emplace(input_map.first);
-      }
-      auto it = keyed_ensemble_graph.find(input_map.second);
-      if (it == keyed_ensemble_graph.end()) {
-        it = keyed_ensemble_graph
-                 .emplace(
-                     std::make_pair(input_map.second, EnsembleTensor(false)))
-                 .first;
-      }
-      for (auto output : tensor_as_output) {
-        output->prev_nodes.push_back(&(it->second));
-        it->second.next_nodes.push_back(output);
-      }
-    }
-
-    step_idx++;
-  }
-
   return Status::Success;
 }
 
@@ -1159,63 +1268,6 @@ ParseLongLongParameter(
 
   return Status::Success;
 }
-
-#ifdef TRTIS_ENABLE_GPU
-Status
-CheckGPUCompatibility(const int gpu_id)
-{
-  // Query the compute capability from the device
-  cudaDeviceProp cuprops;
-  cudaError_t cuerr = cudaGetDeviceProperties(&cuprops, gpu_id);
-  if (cuerr != cudaSuccess) {
-    return Status(
-        RequestStatusCode::INTERNAL,
-        "unable to get CUDA device properties for GPU ID" +
-            std::to_string(gpu_id) + ": " + cudaGetErrorString(cuerr));
-  }
-  double compute_compability = cuprops.major + (cuprops.minor / 10.0);
-  if ((compute_compability > TRTIS_MIN_COMPUTE_CAPABILITY) ||
-      (abs(compute_compability - TRTIS_MIN_COMPUTE_CAPABILITY) < 0.01)) {
-    return Status::Success;
-  } else {
-    return Status(
-        RequestStatusCode::UNSUPPORTED,
-        "gpu " + std::to_string(gpu_id) + " has compute capability '" +
-            std::to_string(cuprops.major) + "." +
-            std::to_string(cuprops.minor) +
-            "' which is less than the minimum supported of '" +
-            std::to_string(TRTIS_MIN_COMPUTE_CAPABILITY) + "'");
-  }
-}
-
-Status
-GetSupportedGPUs(std::set<int>& supported_gpus)
-{
-  // Make sure set is empty before starting
-  supported_gpus.clear();
-
-  int device_cnt;
-  cudaError_t cuerr = cudaGetDeviceCount(&device_cnt);
-  if ((cuerr == cudaErrorNoDevice) || (cuerr == cudaErrorInsufficientDriver)) {
-    device_cnt = 0;
-  } else if (cuerr != cudaSuccess) {
-    return Status(
-        RequestStatusCode::INTERNAL,
-        "unable to get number of CUDA devices: " +
-            std::string(cudaGetErrorString(cuerr)));
-  }
-
-  // populates supported_gpus
-  for (int gpu_id = 0; gpu_id < device_cnt; gpu_id++) {
-    Status status = CheckGPUCompatibility(gpu_id);
-    if (status.IsOk()) {
-      supported_gpus.insert(gpu_id);
-    }
-  }
-  return Status::Success;
-}
-
-#endif
 
 Status
 GetProfileIndex(const std::string& profile_name, int* profile_index)

@@ -115,6 +115,10 @@ SetTRTSERVER_InferenceRequestOptions(
       request_options, request_header.correlation_id()));
   RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetBatchSize(
       request_options, request_header.batch_size()));
+  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetPriority(
+      request_options, request_header.priority()));
+  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetTimeoutMicroseconds(
+      request_options, request_header.timeout_microseconds()));
 
   for (const auto& input : request_header.input()) {
     RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddInput(
@@ -141,17 +145,17 @@ SetInferenceRequestOptions(
     TRTSERVER_InferenceRequestOptions* request_options,
     const ModelInferRequest& request)
 {
-  // FIXMEV2 Fix request ID to be a string.
-  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetId(
-      request_options, 0 /*request.id()*/));
+  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetIdStr(
+      request_options, request.id().c_str()));
   // FIXMEV2 parameters
   // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetFlags(
   //    request_options, request_header.flags()));
-  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetCorrelationId(
-      request_options, request.sequence_id()));
-  // FIXMEV2 batch-size
-  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetBatchSize(
-  //   request_options, request_header.batch_size()));
+  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetPriority(
+  //   request_options, request_header.priority()));
+  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetTimeoutMicroseconds(
+  //   request_options, request_header.timeout_microseconds()));
+  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetCorrelationId(
+  //    request_options, request.sequence_id()));
 
   // FIXMEV2 raw contents size?? Do we need it?
   for (const auto& input : request.inputs()) {
@@ -162,11 +166,19 @@ SetInferenceRequestOptions(
 
   for (const auto& output : request.outputs()) {
     // FIXMEV2 parameters
-    // if (output.has_cls()) {
-    //  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddClassificationOutput(
-    //      request_options, output.name().c_str(), output.cls().count()));
-    //} else
-    {
+    if (output.parameters().find("classification") !=
+        output.parameters().end()) {
+      const auto& infer_param = output.parameters().at("classification");
+      if (infer_param.parameter_choice_case() !=
+          InferParameter::ParameterChoiceCase::kInt64Param) {
+        return TRTSERVER_ErrorNew(
+            TRTSERVER_ERROR_INVALID_ARG,
+            "invalid value type for 'classification' parameter, expected "
+            "int64_param.");
+      }
+      RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddClassificationOutput(
+          request_options, output.name().c_str(), infer_param.int64_param()));
+    } else {
       RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddOutput(
           request_options, output.name().c_str()));
     }
@@ -192,7 +204,7 @@ MemoryTypeString(TRTSERVER_Memory_Type memory_type)
 }
 
 const char*
-GetDataTypeProtocolString(const DataType dtype)
+DataTypeToProtocolString(const DataType dtype)
 {
   switch (dtype) {
     case TYPE_BOOL:
@@ -220,12 +232,121 @@ GetDataTypeProtocolString(const DataType dtype)
     case TYPE_FP64:
       return "FP64";
     case TYPE_STRING:
-      return "STRING";
+      return "BYTES";
     default:
       break;
   }
 
   return "";
+}
+
+DataType
+ProtocolStringToDataType(const char* dtype, size_t len)
+{
+  if (len < 4 || len > 6) {
+    return TYPE_INVALID;
+  }
+
+  if ((*dtype == 'I') && (len != 6)) {
+    if ((dtype[1] == 'N') && (dtype[2] == 'T')) {
+      if ((dtype[3] == '8') && (len == 4)) {
+        return TYPE_INT8;
+      } else if ((dtype[3] == '1') && (dtype[4] == '6')) {
+        return TYPE_INT16;
+      } else if ((dtype[3] == '3') && (dtype[4] == '2')) {
+        return TYPE_INT32;
+      } else if ((dtype[3] == '6') && (dtype[4] == '4')) {
+        return TYPE_INT64;
+      }
+    }
+  } else if ((*dtype == 'U') && (len != 4)) {
+    if ((dtype[1] == 'I') && (dtype[2] == 'N') && (dtype[3] == 'T')) {
+      if ((dtype[4] == '8') && (len == 5)) {
+        return TYPE_UINT8;
+      } else if ((dtype[4] == '1') && (dtype[5] == '6')) {
+        return TYPE_UINT16;
+      } else if ((dtype[4] == '3') && (dtype[5] == '2')) {
+        return TYPE_UINT32;
+      } else if ((dtype[4] == '6') && (dtype[5] == '4')) {
+        return TYPE_UINT64;
+      }
+    }
+  } else if ((*dtype == 'F') && (dtype[1] == 'P') && (len == 4)) {
+    if ((dtype[2] == '1') && (dtype[3] == '6')) {
+      return TYPE_FP16;
+    } else if ((dtype[2] == '3') && (dtype[3] == '2')) {
+      return TYPE_FP32;
+    } else if ((dtype[2] == '6') && (dtype[3] == '4')) {
+      return TYPE_FP64;
+    }
+  } else if (*dtype == 'B') {
+    if (strcmp(dtype + 1, "YTES")) {
+      return TYPE_STRING;
+    }
+  }
+
+  return TYPE_INVALID;
+}
+
+size_t
+GetDataTypeByteSize(const std::string& protocol_dtype)
+{
+  if ((protocol_dtype.compare("BOOL") == 0) ||
+      (protocol_dtype.compare("INT8") == 0) ||
+      (protocol_dtype.compare("UINT8") == 0)) {
+    return 1;
+  } else if (
+      (protocol_dtype.compare("INT16") == 0) ||
+      (protocol_dtype.compare("UINT16") == 0) ||
+      (protocol_dtype.compare("FP16") == 0)) {
+    return 2;
+  } else if (
+      (protocol_dtype.compare("INT32") == 0) ||
+      (protocol_dtype.compare("UINT32") == 0) ||
+      (protocol_dtype.compare("FP32") == 0)) {
+    return 4;
+  } else if (
+      (protocol_dtype.compare("INT64") == 0) ||
+      (protocol_dtype.compare("UINT64") == 0) ||
+      (protocol_dtype.compare("FP64") == 0)) {
+    return 8;
+  } else {
+    // If the data type is unknown or bytes (variable) then return 0
+    return 0;
+  }
+}
+
+TRTSERVER_Error*
+GetModelVersionFromString(
+    const std::string& version_string, int64_t* version_int)
+{
+  if (version_string.empty()) {
+    *version_int = -1;
+  } else {
+    try {
+      *version_int = std::stol(version_string);
+    }
+    catch (std::exception& e) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "failed to get model version from specified version string '" +
+              version_string + "' (details: " + e.what() +
+              "), version should be an integral value > 0")
+              .c_str());
+    }
+    if (*version_int < 0) {
+      return TRTSERVER_ErrorNew(
+          TRTSERVER_ERROR_INVALID_ARG,
+          std::string(
+              "invalid model version specified '" +
+              std::to_string(*version_int) +
+              "' , version should be an integral value > 0")
+              .c_str());
+    }
+  }
+
+  return nullptr;  // Success
 }
 
 }}  // namespace nvidia::inferenceserver

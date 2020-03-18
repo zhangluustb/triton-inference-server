@@ -41,7 +41,7 @@
 #include "src/core/logging.h"
 #include "src/core/trtserver.h"
 #include "src/servers/common.h"
-#include "src/servers/shared_memory_block_manager.h"
+#include "src/servers/shared_memory_manager.h"
 #include "src/servers/tracer.h"
 
 #ifdef TRTIS_ENABLE_GPU
@@ -53,6 +53,9 @@ static_assert(
 #if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_METRICS)
 #include "src/servers/http_server.h"
 #endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_METRICS
+#if defined(TRTIS_ENABLE_HTTP_V2) || defined(TRTIS_ENABLE_METRICS)
+#include "src/servers/http_server_v2.h"
+#endif  // TRTIS_ENABLE_HTTP_V2|| TRTIS_ENABLE_METRICS
 
 #ifdef TRTIS_ENABLE_GRPC
 #include "src/servers/grpc_server.h"
@@ -76,24 +79,30 @@ int32_t repository_poll_secs_ = 15;
 // Whether explicit model control is allowed
 bool allow_model_control_ = false;
 
+// Default to using the V1 protocol.
+int32_t api_version_ = 1;
+
 // The HTTP, GRPC and metrics service/s and ports. Initialized to
 // default values and modifyied based on command-line args. Set to -1
 // to indicate the protocol is disabled.
 #ifdef TRTIS_ENABLE_HTTP
 std::vector<std::unique_ptr<nvidia::inferenceserver::HTTPServer>>
     http_services_;
+std::vector<std::string> endpoint_names = {
+    "status",    "health", "infer", "modelcontrol", "sharedmemorycontrol",
+    "repository"};
+#endif  // TRTIS_ENABLE_HTTP
+#ifdef TRTIS_ENABLE_HTTP_V2
+std::vector<std::unique_ptr<nvidia::inferenceserver::HTTPServerV2>>
+    http_services_v2_;
+std::vector<std::string> endpoint_names_v2 = {"health", "infer"};
+#endif  // TRTIS_ENABLE_HTTP_V2
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
 bool allow_http_ = true;
 int32_t http_port_ = 8000;
 int32_t http_health_port_ = -1;
 std::vector<int32_t> http_ports_;
-#ifdef TRTIS_ENABLE_HTTP_V2
-std::vector<std::string> endpoint_names = {"health", "infer"};
-#else
-std::vector<std::string> endpoint_names = {
-    "status",    "health", "infer", "modelcontrol", "sharedmemorycontrol",
-    "repository"};
-#endif  // TRTIS_ENABLE_HTTP_V2
-#endif  // TRTIS_ENABLE_HTTP
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2
 
 #ifdef TRTIS_ENABLE_GRPC
 std::unique_ptr<nvidia::inferenceserver::GRPCServer> grpc_service_;
@@ -103,12 +112,12 @@ std::unique_ptr<nvidia::inferenceserver::GRPCServerV2> grpc_service_v2_;
 #endif  // TRTIS_ENABLE_GRPC_V2
 #if defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)
 bool allow_grpc_ = true;
-int32_t api_version_ = 1;
 int32_t grpc_port_ = 8001;
 #endif  // TRTIS_ENABLE_GRPC || TRTIS_ENABLE_GRPC_V2
 
 #ifdef TRTIS_ENABLE_METRICS
 std::unique_ptr<nvidia::inferenceserver::HTTPServer> metrics_service_;
+std::unique_ptr<nvidia::inferenceserver::HTTPServerV2> metrics_service_v2_;
 bool allow_metrics_ = true;
 int32_t metrics_port_ = 8002;
 #endif  // TRTIS_ENABLE_METRICS
@@ -135,10 +144,10 @@ int grpc_stream_infer_thread_cnt_ = 1;
 int grpc_infer_allocation_pool_size_ = 8;
 #endif  // TRTIS_ENABLE_GRPC || TRTIS_ENABLE_GRPC_V2
 
-#ifdef TRTIS_ENABLE_HTTP
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
 // The number of threads to initialize for the HTTP front-end.
 int http_thread_cnt_ = 8;
-#endif  // TRTIS_ENABLE_HTTP
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2
 
 // Command-line options
 enum OptionId {
@@ -154,15 +163,15 @@ enum OptionId {
   OPTION_EXIT_ON_ERROR,
   OPTION_STRICT_MODEL_CONFIG,
   OPTION_STRICT_READINESS,
-#ifdef TRTIS_ENABLE_HTTP
+  OPTION_API_VERSION,
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
   OPTION_ALLOW_HTTP,
   OPTION_HTTP_PORT,
   OPTION_HTTP_HEALTH_PORT,
   OPTION_HTTP_THREAD_COUNT,
-#endif  // TRTIS_ENABLE_HTTP
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2
 #if defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)
   OPTION_ALLOW_GRPC,
-  OPTION_API_VERSION,
   OPTION_GRPC_PORT,
   OPTION_GRPC_INFER_THREAD_COUNT,
   OPTION_GRPC_STREAM_INFER_THREAD_COUNT,
@@ -184,6 +193,8 @@ enum OptionId {
   OPTION_ALLOW_MODEL_CONTROL,
   OPTION_STARTUP_MODEL,
   OPTION_PINNED_MEMORY_POOL_BYTE_SIZE,
+  OPTION_CUDA_MEMORY_POOL_BYTE_SIZE,
+  OPTION_MIN_SUPPORTED_COMPUTE_CAPABILITY,
   OPTION_EXIT_TIMEOUT_SECS,
   OPTION_TF_ALLOW_SOFT_PLACEMENT,
   OPTION_TF_GPU_MEMORY_FRACTION,
@@ -246,7 +257,10 @@ std::vector<Option> options_
        "is responsive and all models are available. If false "
        "/api/health/ready endpoint indicates ready if server is responsive "
        "even if some/all models are unavailable."},
-#ifdef TRTIS_ENABLE_HTTP
+      {OPTION_API_VERSION, "api-version",
+       "Version of the GRPC/HTTP API to use. Default is version 1. Allowed "
+       "versions are 1 and 2."},
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
       {OPTION_ALLOW_HTTP, "allow-http",
        "Allow the server to listen for HTTP requests."},
       {OPTION_HTTP_PORT, "http-port",
@@ -255,13 +269,10 @@ std::vector<Option> options_
        "The port for the server to listen on for HTTP Health requests."},
       {OPTION_HTTP_THREAD_COUNT, "http-thread-count",
        "Number of threads handling HTTP requests."},
-#endif  // TRTIS_ENABLE_HTTP
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2
 #if defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)
       {OPTION_ALLOW_GRPC, "allow-grpc",
        "Allow the server to listen for GRPC requests."},
-      {OPTION_API_VERSION, "api-version",
-       "Version of the GRPC/HTTP API to use. Default is version 1. Allowed "
-       "versions are 1 and 2."},
       {OPTION_GRPC_PORT, "grpc-port",
        "The port for the server to listen on for GRPC requests."},
       {OPTION_GRPC_INFER_THREAD_COUNT, "grpc-infer-thread-count",
@@ -329,6 +340,20 @@ std::vector<Option> options_
        "memory to accelerate data transfer between host and devices until it "
        "exceeds the specified byte size. This option will not affect the "
        "allocation conducted by the backend frameworks. Default is 256 MB."},
+      {OPTION_CUDA_MEMORY_POOL_BYTE_SIZE, "cuda-memory-pool-byte-size",
+       "The total byte size that can be allocated as CUDA memory for the GPU "
+       "device. If GPU support is enabled, the server will allocate CUDA "
+       "memory to minimize data transfer between host and devices until it "
+       "exceeds the specified byte size. This option will not affect the "
+       "allocation conducted by the backend frameworks. The argument should be "
+       "2 integers separated by colons in the format "
+       "<GPU device ID>:<pool byte size>. This option can be used multiple "
+       "times, but only once per GPU device. Subsequent uses will overwrite "
+       "previous uses for the same GPU device. Default is 64 MB."},
+      {OPTION_MIN_SUPPORTED_COMPUTE_CAPABILITY,
+       "min-supported-compute-capability",
+       "The minimum supported CUDA compute capability. GPUs that don't support "
+       "this compute capability will not be used by the server."},
       {OPTION_EXIT_TIMEOUT_SECS, "exit-timeout-secs",
        "Timeout (in seconds) when exiting to wait for in-flight inferences to "
        "finish. After the timeout expires the server exits even if inferences "
@@ -374,7 +399,7 @@ SignalHandler(int signum)
 bool
 CheckPortCollision()
 {
-#if defined(TRTIS_ENABLE_HTTP) && \
+#if (defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)) && \
     (defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2))
   // Check if HTTP and GRPC have shared ports
   if ((std::find(http_ports_.begin(), http_ports_.end(), grpc_port_) !=
@@ -384,7 +409,8 @@ CheckPortCollision()
               << "and GRPC requests at the same port" << std::endl;
     return true;
   }
-#endif  // TRTIS_ENABLE_HTTP && (TRTIS_ENABLE_GRPC || TRTIS_ENABLE_GRPC_V2)
+#endif  // (TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2) && (TRTIS_ENABLE_GRPC ||
+        // TRTIS_ENABLE_GRPC_V2)
 
 #if (defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)) && \
     defined(TRTIS_ENABLE_METRICS)
@@ -417,11 +443,11 @@ StartGrpcService(
     std::unique_ptr<nvidia::inferenceserver::GRPCServer>* service,
     const std::shared_ptr<TRTSERVER_Server>& server,
     const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
-    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryBlockManager>&
-        smb_manager)
+    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryManager>&
+        shm_manager)
 {
   TRTSERVER_Error* err = nvidia::inferenceserver::GRPCServer::Create(
-      server, trace_manager, smb_manager, grpc_port_, grpc_infer_thread_cnt_,
+      server, trace_manager, shm_manager, grpc_port_, grpc_infer_thread_cnt_,
       grpc_stream_infer_thread_cnt_, grpc_infer_allocation_pool_size_, service);
   if (err == nullptr) {
     err = (*service)->Start();
@@ -441,11 +467,11 @@ StartGrpcServiceV2(
     std::unique_ptr<nvidia::inferenceserver::GRPCServerV2>* service,
     const std::shared_ptr<TRTSERVER_Server>& server,
     const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
-    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryBlockManager>&
-        smb_manager)
+    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryManager>&
+        shm_manager)
 {
   TRTSERVER_Error* err = nvidia::inferenceserver::GRPCServerV2::Create(
-      server, trace_manager, smb_manager, grpc_port_,
+      server, trace_manager, shm_manager, grpc_port_,
       grpc_infer_allocation_pool_size_, service);
   if (err == nullptr) {
     err = (*service)->Start();
@@ -465,12 +491,12 @@ StartHttpService(
     std::vector<std::unique_ptr<nvidia::inferenceserver::HTTPServer>>* services,
     const std::shared_ptr<TRTSERVER_Server>& server,
     const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
-    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryBlockManager>&
-        smb_manager,
+    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryManager>&
+        shm_manager,
     std::map<int32_t, std::vector<std::string>>& port_map)
 {
   TRTSERVER_Error* err = nvidia::inferenceserver::HTTPServer::CreateAPIServer(
-      server, trace_manager, smb_manager, port_map, http_thread_cnt_, services);
+      server, trace_manager, shm_manager, port_map, http_thread_cnt_, services);
   if (err == nullptr) {
     for (auto& http_eps : *services) {
       if (http_eps != nullptr) {
@@ -491,6 +517,39 @@ StartHttpService(
 }
 #endif  // TRTIS_ENABLE_HTTP
 
+#ifdef TRTIS_ENABLE_HTTP_V2
+TRTSERVER_Error*
+StartHttpV2Service(
+    std::vector<std::unique_ptr<nvidia::inferenceserver::HTTPServerV2>>*
+        services,
+    const std::shared_ptr<TRTSERVER_Server>& server,
+    const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
+    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryManager>&
+        shm_manager,
+    std::map<int32_t, std::vector<std::string>>& port_map)
+{
+  TRTSERVER_Error* err = nvidia::inferenceserver::HTTPServerV2::CreateAPIServer(
+      server, trace_manager, shm_manager, port_map, http_thread_cnt_, services);
+  if (err == nullptr) {
+    for (auto& http_eps : *services) {
+      if (http_eps != nullptr) {
+        err = http_eps->Start();
+      }
+    }
+  }
+
+  if (err != nullptr) {
+    for (auto& http_eps : *services) {
+      if (http_eps != nullptr) {
+        http_eps.reset();
+      }
+    }
+  }
+
+  return err;
+}
+#endif  // TRTIS_ENABLE_HTTP_V2
+
 #ifdef TRTIS_ENABLE_METRICS
 TRTSERVER_Error*
 StartMetricsService(
@@ -509,14 +568,32 @@ StartMetricsService(
 
   return err;
 }
+
+TRTSERVER_Error*
+StartMetricsV2Service(
+    std::unique_ptr<nvidia::inferenceserver::HTTPServerV2>* service,
+    const std::shared_ptr<TRTSERVER_Server>& server)
+{
+  TRTSERVER_Error* err =
+      nvidia::inferenceserver::HTTPServerV2::CreateMetricsServer(
+          server, metrics_port_, 1 /* HTTP thread count */, service);
+  if (err == nullptr) {
+    err = (*service)->Start();
+  }
+  if (err != nullptr) {
+    service->reset();
+  }
+
+  return err;
+}
 #endif  // TRTIS_ENABLE_METRICS
 
 bool
 StartEndpoints(
     const std::shared_ptr<TRTSERVER_Server>& server,
     const std::shared_ptr<nvidia::inferenceserver::TraceManager>& trace_manager,
-    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryBlockManager>&
-        smb_manager)
+    const std::shared_ptr<nvidia::inferenceserver::SharedMemoryManager>&
+        shm_manager)
 {
   const char* id;
   FAIL_IF_ERR(TRTSERVER_ServerId(server.get(), &id), "getting server ID");
@@ -526,7 +603,7 @@ StartEndpoints(
   // Enable GRPC endpoints if requested...
   if (allow_grpc_ && (api_version_ == 1) && (grpc_port_ != -1)) {
     TRTSERVER_Error* err =
-        StartGrpcService(&grpc_service_, server, trace_manager, smb_manager);
+        StartGrpcService(&grpc_service_, server, trace_manager, shm_manager);
     if (err != nullptr) {
       LOG_TRTSERVER_ERROR(err, "failed to start GRPC service");
       return false;
@@ -538,7 +615,7 @@ StartEndpoints(
   // Enable GRPC V2 endpoints if requested...
   if (allow_grpc_ && (api_version_ == 2) && (grpc_port_ != -1)) {
     TRTSERVER_Error* err = StartGrpcServiceV2(
-        &grpc_service_v2_, server, trace_manager, smb_manager);
+        &grpc_service_v2_, server, trace_manager, shm_manager);
     if (err != nullptr) {
       LOG_TRTSERVER_ERROR(err, "failed to start GRPC V2 service");
       return false;
@@ -548,7 +625,7 @@ StartEndpoints(
 
 #ifdef TRTIS_ENABLE_HTTP
   // Enable HTTP endpoints if requested...
-  if (allow_http_) {
+  if (allow_http_ && (api_version_ == 1)) {
     std::map<int32_t, std::vector<std::string>> port_map;
 
     // Group by port numbers
@@ -559,7 +636,7 @@ StartEndpoints(
     }
 
     TRTSERVER_Error* err = StartHttpService(
-        &http_services_, server, trace_manager, smb_manager, port_map);
+        &http_services_, server, trace_manager, shm_manager, port_map);
     if (err != nullptr) {
       LOG_TRTSERVER_ERROR(err, "failed to start HTTP service");
       return false;
@@ -567,13 +644,43 @@ StartEndpoints(
   }
 #endif  // TRTIS_ENABLE_HTTP
 
+#ifdef TRTIS_ENABLE_HTTP_V2
+  // Enable HTTP endpoints if requested...
+  if (allow_http_ && (api_version_ == 2)) {
+    std::map<int32_t, std::vector<std::string>> port_map;
+
+    // Group by port numbers
+    for (size_t i = 0; i < http_ports_.size(); i++) {
+      if (http_ports_[i] != -1) {
+        port_map[http_ports_[i]].push_back(endpoint_names_v2[i]);
+      }
+    }
+
+    TRTSERVER_Error* err = StartHttpV2Service(
+        &http_services_v2_, server, trace_manager, shm_manager, port_map);
+    if (err != nullptr) {
+      LOG_TRTSERVER_ERROR(err, "failed to start HTTP V2 service");
+      return false;
+    }
+  }
+#endif  // TRTIS_ENABLE_HTTP_V2
+
 #ifdef TRTIS_ENABLE_METRICS
   // Enable metrics endpoint if requested...
   if (metrics_port_ != -1) {
-    TRTSERVER_Error* err = StartMetricsService(&metrics_service_, server);
-    if (err != nullptr) {
-      LOG_TRTSERVER_ERROR(err, "failed to start Metrics service");
-      return false;
+    if (api_version_ == 1) {
+      TRTSERVER_Error* err = StartMetricsService(&metrics_service_, server);
+      if (err != nullptr) {
+        LOG_TRTSERVER_ERROR(err, "failed to start Metrics service");
+        return false;
+      }
+    } else if (api_version_ == 2) {
+      TRTSERVER_Error* err =
+          StartMetricsV2Service(&metrics_service_v2_, server);
+      if (err != nullptr) {
+        LOG_TRTSERVER_ERROR(err, "failed to start Metrics V2 service");
+        return false;
+      }
     }
   }
 #endif  // TRTIS_ENABLE_METRICS
@@ -599,6 +706,20 @@ StopEndpoints()
 
   http_services_.clear();
 #endif  // TRTIS_ENABLE_HTTP
+
+#ifdef TRTIS_ENABLE_HTTP_V2
+  for (auto& http_eps : http_services_v2_) {
+    if (http_eps != nullptr) {
+      TRTSERVER_Error* err = http_eps->Stop();
+      if (err != nullptr) {
+        LOG_TRTSERVER_ERROR(err, "failed to stop HTTP V2 service");
+        ret = false;
+      }
+    }
+  }
+
+  http_services_v2_.clear();
+#endif  // TRTIS_ENABLE_HTTP_V2
 
 #ifdef TRTIS_ENABLE_GRPC
   if (grpc_service_) {
@@ -633,6 +754,16 @@ StopEndpoints()
     }
 
     metrics_service_.reset();
+  }
+
+  if (metrics_service_v2_) {
+    TRTSERVER_Error* err = metrics_service_v2_->Stop();
+    if (err != nullptr) {
+      LOG_TRTSERVER_ERROR(err, "failed to stop Metrics V2 service");
+      ret = false;
+    }
+
+    metrics_service_v2_.reset();
   }
 #endif  // TRTIS_ENABLE_METRICS
 
@@ -727,6 +858,12 @@ float
 ParseFloatOption(const std::string arg)
 {
   return std::stof(arg);
+}
+
+double
+ParseDoubleOption(const std::string arg)
+{
+  return std::stod(arg);
 }
 
 // Condition here merely to avoid compilation error, this function will
@@ -837,6 +974,31 @@ ParseVGPUOption(const std::string arg)
   return {gpu_device, num_vgpus_on_device, mem_limit};
 }
 
+std::pair<int, uint64_t>
+ParsePairOption(const std::string arg)
+{
+  int delim = arg.find(":");
+
+  if ((delim < 0)) {
+    std::cerr << "Cannot parse pair option due to incorrect number of inputs."
+                 "--<pair option> argument requires format <key>:<value>. "
+              << "Found: " << arg << std::endl;
+    std::cerr << Usage() << std::endl;
+    exit(1);
+  }
+
+  std::string key_string = arg.substr(0, delim);
+  std::string value_string = arg.substr(delim + 1);
+
+  // Specific conversion from key-value string to actual key-value type,
+  // should be extracted out of this function if we need to parse
+  // more pair option of different types.
+  int key = ParseIntOption(key_string);
+  uint64_t value = ParseLongLongOption(value_string);
+
+  return {key, value};
+}
+
 bool
 Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
 {
@@ -852,23 +1014,30 @@ Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
   int32_t repository_poll_secs = repository_poll_secs_;
   int64_t pinned_memory_pool_byte_size = 1 << 28;
 
-#ifdef TRTIS_ENABLE_HTTP
+#ifdef TRTIS_ENABLE_GPU
+  double min_supported_compute_capability = TRTIS_MIN_COMPUTE_CAPABILITY;
+#else
+  double min_supported_compute_capability = 0;
+#endif  // TRTIS_ENABLE_GPU
+
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
   int32_t http_port = http_port_;
   int32_t http_thread_cnt = http_thread_cnt_;
   int32_t http_health_port = http_port_;
-#endif  // TRTIS_ENABLE_HTTP
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2
 
 #if defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)
-#ifdef TRTIS_ENABLE_GRPC
-  int32_t api_version = 1;
-#else
-  int32_t api_version = 2;
-#endif  // TRTIS_ENABLE_GRPC
   int32_t grpc_port = grpc_port_;
   int32_t grpc_infer_thread_cnt = grpc_infer_thread_cnt_;
   int32_t grpc_stream_infer_thread_cnt = grpc_stream_infer_thread_cnt_;
   int32_t grpc_infer_allocation_pool_size = grpc_infer_allocation_pool_size_;
 #endif  // TRTIS_ENABLE_GRPC || TRTIS_ENABLE_GRPC_V2
+
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_GRPC)
+  int32_t api_version = 1;
+#else
+  int32_t api_version = 2;
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_GRPC
 
 #ifdef TRTIS_ENABLE_METRICS
   int32_t metrics_port = metrics_port_;
@@ -940,8 +1109,11 @@ Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
       case OPTION_STRICT_READINESS:
         strict_readiness = ParseBoolOption(optarg);
         break;
+      case OPTION_API_VERSION:
+        api_version = ParseIntOption(optarg);
+        break;
 
-#ifdef TRTIS_ENABLE_HTTP
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
       case OPTION_ALLOW_HTTP:
         allow_http_ = ParseBoolOption(optarg);
         break;
@@ -960,9 +1132,6 @@ Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
 #if defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)
       case OPTION_ALLOW_GRPC:
         allow_grpc_ = ParseBoolOption(optarg);
-        break;
-      case OPTION_API_VERSION:
-        api_version = ParseIntOption(optarg);
         break;
       case OPTION_GRPC_PORT:
         grpc_port = ParseIntOption(optarg);
@@ -1037,6 +1206,17 @@ Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
       case OPTION_PINNED_MEMORY_POOL_BYTE_SIZE:
         pinned_memory_pool_byte_size = ParseLongLongOption(optarg);
         break;
+      case OPTION_CUDA_MEMORY_POOL_BYTE_SIZE: {
+        auto cuda_pool = ParsePairOption(optarg);
+        FAIL_IF_ERR(
+            TRTSERVER_ServerOptionsSetCudaMemoryPoolByteSize(
+                server_options, cuda_pool.first, cuda_pool.second),
+            "setting total CUDA memory byte size");
+        break;
+      }
+      case OPTION_MIN_SUPPORTED_COMPUTE_CAPABILITY:
+        min_supported_compute_capability = ParseDoubleOption(optarg);
+        break;
       case OPTION_EXIT_TIMEOUT_SECS:
         exit_timeout_secs = ParseIntOption(optarg);
         break;
@@ -1106,21 +1286,21 @@ Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
     }
   }
 
+  api_version_ = api_version;
 
-#ifdef TRTIS_ENABLE_HTTP
+#if defined(TRTIS_ENABLE_HTTP) || defined(TRTIS_ENABLE_HTTP_V2)
   http_port_ = http_port;
   http_health_port_ = http_health_port;
-#ifdef TRTIS_ENABLE_HTTP_V2
-  http_ports_ = {http_health_port_, http_port_};
-#else
-  http_ports_ = {http_port_, http_health_port_, http_port_,
-                 http_port_, http_port_,        http_port_};
-#endif  // TRTIS_ENABLE_HTTP_V2
   http_thread_cnt_ = http_thread_cnt;
-#endif  // TRTIS_ENABLE_HTTP
+  if (api_version_ == 2) {
+    http_ports_ = {http_health_port_, http_port_};
+  } else {
+    http_ports_ = {http_port_, http_health_port_, http_port_,
+                   http_port_, http_port_,        http_port_};
+  }
+#endif  // TRTIS_ENABLE_HTTP || TRTIS_ENABLE_HTTP_V2
 
 #if defined(TRTIS_ENABLE_GRPC) || defined(TRTIS_ENABLE_GRPC_V2)
-  api_version_ = api_version;
   grpc_port_ = grpc_port;
   grpc_infer_thread_cnt_ = grpc_infer_thread_cnt;
   grpc_stream_infer_thread_cnt_ = grpc_stream_infer_thread_cnt;
@@ -1169,6 +1349,10 @@ Parse(TRTSERVER_ServerOptions* server_options, int argc, char** argv)
       TRTSERVER_ServerOptionsSetPinnedMemoryPoolByteSize(
           server_options, pinned_memory_pool_byte_size),
       "setting total pinned memory byte size");
+  FAIL_IF_ERR(
+      TRTSERVER_ServerOptionsSetMinSupportedComputeCapability(
+          server_options, min_supported_compute_capability),
+      "setting minimum supported CUDA compute capability");
   FAIL_IF_ERR(
       TRTSERVER_ServerOptionsSetExitOnError(server_options, exit_on_error),
       "setting exit on error");
@@ -1239,8 +1423,8 @@ main(int argc, char** argv)
   std::shared_ptr<nvidia::inferenceserver::TraceManager> trace_manager;
 
   // Manager for shared memory blocks.
-  auto smb_manager =
-      std::make_shared<nvidia::inferenceserver::SharedMemoryBlockManager>();
+  auto shm_manager =
+      std::make_shared<nvidia::inferenceserver::SharedMemoryManager>();
 
   // Create the server...
   TRTSERVER_Server* server_ptr = nullptr;
@@ -1257,7 +1441,7 @@ main(int argc, char** argv)
   }
 
   // Start the HTTP, GRPC, and metrics endpoints.
-  if (!StartEndpoints(server, trace_manager, smb_manager)) {
+  if (!StartEndpoints(server, trace_manager, shm_manager)) {
     exit(1);
   }
 

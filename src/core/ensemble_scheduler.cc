@@ -1,4 +1,4 @@
-// Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -31,7 +31,6 @@
 #include "src/core/backend.h"
 #include "src/core/cuda_utils.h"
 #include "src/core/logging.h"
-#include "src/core/provider_utils.h"
 #include "src/core/server.h"
 #include "src/core/server_status.h"
 #include "src/core/trtserver.h"
@@ -96,7 +95,7 @@ class EnsembleContext {
   // Storing each tensor's meta data in 1st element, batch size in 2nd
   // (0 for non-batchable), and the raw data in 3rd.
   using TensorData =
-      std::tuple<InferRequestHeader::Input, size_t, std::shared_ptr<Memory>>;
+      std::tuple<InferenceRequest::Input, size_t, std::shared_ptr<Memory>>;
 
   // Return the list of step that becomes ready due to tensor update
   // from 'completed_step'
@@ -125,7 +124,7 @@ class EnsembleContext {
 
   // Helper function that initialize the 'step' given the info at 'step_idx'.
   // The 'step' will have proper request / response provider for the model
-  Status InitStep(size_t step_idx, std::shared_ptr<Step>* step);
+  Status InitStep(const size_t step_idx, std::shared_ptr<Step>* step);
 
   // Helper function that set the output of the ensemble request if it is ready
   // and valid.
@@ -137,7 +136,8 @@ class EnsembleContext {
   // Returns the batch size to be used after the reshape.
   size_t ReshapeTensorDims(
       const DimsList& config_dims, const bool allow_batching,
-      const size_t tensor_batch_size, DimsList* mutable_dims);
+      const size_t tensor_batch_size, const std::vector<int64_t>& dims,
+      std::vector<int64_t>* mutable_dims);
 
   InferenceServer* is_;
 
@@ -168,6 +168,7 @@ class EnsembleContext {
   uint32_t flags_;
   uint64_t correlation_id_;
   uint32_t batch_size_;
+  uint32_t priority_;
 
   // Objects related to the ensemble infer request
   Status ensemble_status_;
@@ -224,8 +225,8 @@ EnsembleContext::EnsembleContext(
   for (const auto& ensemble_output : info_->ensemble_output_shape_) {
     ignored_tensor.insert(ensemble_output.first);
   }
-  for (const auto& output : request_provider_->RequestHeader().output()) {
-    ignored_tensor.erase(output.name());
+  for (const auto& pr : request_provider_->Request()->RequestedOutputs()) {
+    ignored_tensor.erase(pr.first);
   }
   if (ignored_tensor.empty()) {
     tensor_to_step_ = &(info_->tensor_to_step_);
@@ -268,14 +269,16 @@ EnsembleContext::EnsembleContext(
   }
 
   if (ensemble_status_.IsOk()) {
-    const auto& request_header = request_provider_->RequestHeader();
+    const auto& irequest = request_provider_->Request();
 
-    batch_size_ = request_header.batch_size();
-    correlation_id_ = request_header.correlation_id();
-    flags_ = request_header.flags();
+    batch_size_ = irequest->BatchSize();
+    correlation_id_ = irequest->CorrelationId();
+    flags_ = irequest->Flags();
+    priority_ = irequest->Priority();
 
-    for (const auto& input : request_header.input()) {
-      auto it = tensor_data_.find(input.name());
+    for (const auto& pr : irequest->Inputs()) {
+      const auto& input = pr.second;
+      auto it = tensor_data_.find(input.Name());
       if (it != tensor_data_.end()) {
         auto& tensor_data = it->second;
         std::get<0>(tensor_data) = input;
@@ -284,7 +287,7 @@ EnsembleContext::EnsembleContext(
       } else {
         ensemble_status_ = Status(
             RequestStatusCode::INVALID_ARG,
-            "unexpected input '" + input.name() +
+            "unexpected input '" + input.Name() +
                 "' in request header that does not map to any ensemble inputs");
       }
     }
@@ -435,8 +438,13 @@ EnsembleContext::UpdateEnsembleState(
         if (it != info_->steps_[step_idx].output_to_tensor_.end()) {
           auto& tensor_data = tensor_data_[it->second];
           auto& meta_data = std::get<0>(tensor_data);
-          *(meta_data.mutable_dims()) = output.raw().dims();
-          meta_data.set_batch_byte_size(output.raw().batch_byte_size());
+
+          meta_data.MutableShape()->clear();
+          for (const auto d : output.raw().dims()) {
+            meta_data.MutableShape()->push_back(d);
+          }
+
+          meta_data.SetBatchByteSize(output.raw().batch_byte_size());
 
           std::get<1>(tensor_data) = batch_size;
 
@@ -513,53 +521,67 @@ EnsembleContext::GetNextSteps(
 }
 
 Status
-EnsembleContext::InitStep(size_t step_idx, std::shared_ptr<Step>* step)
+EnsembleContext::InitStep(const size_t step_idx, std::shared_ptr<Step>* step)
 {
-  std::unordered_map<std::string, std::shared_ptr<Memory>> input_map;
-  InferRequestHeader request_header;
-  auto& version_map = handles_[info_->steps_[step_idx].model_name_];
-  auto& backend = version_map[info_->steps_[step_idx].model_version_];
+  const auto& istep = info_->steps_[step_idx];
+  auto& version_map = handles_[istep.model_name_];
+  auto& backend = version_map[istep.model_version_];
 
   const bool allow_batching = (backend->Config().max_batch_size() > 0);
   size_t batch_size = (allow_batching ? batch_size_ : 0);
 
-  // Set inputs in request header and prepare input map
-  for (const auto& pair : info_->steps_[step_idx].input_to_tensor_) {
-    auto input = request_header.add_input();
-    *input = std::get<0>(tensor_data_[pair.second]);
-    input->set_name(pair.first);
+  // FIXMEV2 once protocol_version 2 is the only one remove
+  // SetBatchSize and adjust the input/output tensors to have
+  // appropriate shape
+  auto irequest = std::make_shared<InferenceRequest>(
+      istep.model_name_, istep.model_version_, istep.model_version_,
+      1 /* protocol_version */);
+
+  // Request for ensemble model cannot override the timeout values for the
+  // composing models. Thus currently the timeout field in request has no
+  // effect until we support an overall ensemble timeout.
+  irequest->SetTimeoutMicroseconds(0);
+
+  // Set inputs in request and prepare input map
+  for (const auto& pair : istep.input_to_tensor_) {
+    const auto& other = std::get<0>(tensor_data_[pair.second]);
 
     // If the actual shape and config shape agree with each other without
     // considering batch size, non-batch / batch conversion are not required
     const ModelInput* input_config;
     backend->GetInput(pair.first, &input_config);
+
+    std::vector<int64_t> shape;
     batch_size = ReshapeTensorDims(
         input_config->dims(), allow_batching,
-        std::get<1>(tensor_data_[pair.second]), input->mutable_dims());
+        std::get<1>(tensor_data_[pair.second]), other.Shape(), &shape);
 
-    input_map[pair.first] = std::get<2>(tensor_data_[pair.second]);
+    InferenceRequest::Input* input;
+    RETURN_IF_ERROR(
+        irequest->AddInput(pair.first, shape, other.BatchByteSize(), &input));
+    RETURN_IF_ERROR(input->SetData(std::get<2>(tensor_data_[pair.second])));
   }
 
   // Set requested outputs in request header
-  for (const auto& pair : info_->steps_[step_idx].output_to_tensor_) {
-    request_header.add_output()->set_name(pair.first);
+  for (const auto& pair : istep.output_to_tensor_) {
+    irequest->AddRequestedOutput(pair.first);
   }
 
-  request_header.set_correlation_id(correlation_id_);
-  request_header.set_flags(flags_);
-  request_header.set_batch_size((batch_size == 0 ? 1 : batch_size));
-  RETURN_IF_ERROR(NormalizeRequestHeader(*backend, request_header));
+  irequest->SetCorrelationId(correlation_id_);
+  irequest->SetFlags(flags_);
+  irequest->SetBatchSize((batch_size == 0 ? 1 : batch_size));
+  irequest->SetPriority(priority_);
+
+  RETURN_IF_ERROR(irequest->PrepareForInference(*backend));
 
   step->reset(new Step(step_idx));
   (*step)->backend_ = backend;
-  RETURN_IF_ERROR(InferRequestProvider::Create(
-      info_->steps_[step_idx].model_name_,
-      info_->steps_[step_idx].model_version_, request_header, input_map,
-      &((*step)->request_provider_)));
+  RETURN_IF_ERROR(
+      InferRequestProvider::Create(irequest, &((*step)->request_provider_)));
   // Request header is stored in response provider as reference, so use
   // header from request provider as the providers have same lifetime
   RETURN_IF_ERROR(InferResponseProvider::Create(
-      (*step)->request_provider_->RequestHeader(),
+      (*step)->request_provider_->Request(),
       (*step)->backend_->GetLabelProvider(), allocator_.get(), ResponseAlloc,
       &((*step)->output_map_), ResponseRelease,
       &((*step)->response_provider_)));
@@ -570,32 +592,39 @@ EnsembleContext::InitStep(size_t step_idx, std::shared_ptr<Step>* step)
 size_t
 EnsembleContext::ReshapeTensorDims(
     const DimsList& config_dims, const bool allow_batching,
-    const size_t tensor_batch_size, DimsList* mutable_dims)
+    const size_t tensor_batch_size, const std::vector<int64_t>& dims,
+    std::vector<int64_t>* mutable_dims)
 {
   size_t batch_size = tensor_batch_size;
+  bool reshaped = false;
+  mutable_dims->clear();
+
   // If the actual shape and config shape agree with each other without
   // considering batch size, non-batch / batch conversion are not required.
-  if (!CompareDimsWithWildcard(*mutable_dims, config_dims)) {
+  if (!CompareDimsWithWildcard(config_dims, dims)) {
     // Only reshape if one setting is batchable while the other is not,
     // otherwise the shape mismatch can not be recovered with reshape
     // and should have caused error during validation.
     if (allow_batching != (tensor_batch_size != 0)) {
       if (allow_batching) {
         // assume first dim is batch dim and extract it.
-        auto bit = mutable_dims->begin();
-        batch_size = *bit;
-        mutable_dims->erase(bit);
+        batch_size = dims[0];
+        mutable_dims->assign(dims.begin() + 1, dims.end());
+        reshaped = true;
       } else {
-        // insert batch size as first dim. Protobuf only allows appending to the
-        // back, so have to move batch size forward one by one
-        mutable_dims->Add(tensor_batch_size);
-        for (size_t bidx = mutable_dims->size() - 1; bidx >= 1; bidx--) {
-          mutable_dims->SwapElements(bidx - 1, bidx);
-        }
+        // insert batch size as first dim.
+        mutable_dims->push_back(tensor_batch_size);
+        mutable_dims->insert(mutable_dims->end(), dims.begin(), dims.end());
         batch_size = 0;
+        reshaped = true;
       }
     }
   }
+
+  if (!reshaped) {
+    *mutable_dims = dims;
+  }
+
   return batch_size;
 }
 
@@ -636,28 +665,24 @@ EnsembleContext::CheckAndSetEnsembleOutput()
           RequestStatusCode::INVALID_ARG,
           "unexpected deadlock, output '" + output_pair.first +
               "' is not set while no more ensemble steps can be made");
-    } else if (meta_data.batch_byte_size() != memory_block->TotalByteSize()) {
+    } else if (meta_data.BatchByteSize() != memory_block->TotalByteSize()) {
       return Status(
           RequestStatusCode::INTERNAL,
           "unexpected size for output '" + output_pair.first + "', byte-size " +
-              std::to_string(meta_data.batch_byte_size()) + " does not equal " +
+              std::to_string(meta_data.BatchByteSize()) + " does not equal " +
               std::to_string(memory_block->TotalByteSize()));
     }
 
     // copy data to ensemble response provider
-    size_t expected_byte_size = meta_data.batch_byte_size();
-    DimsList output_dims = meta_data.dims();
+    size_t expected_byte_size = meta_data.BatchByteSize();
+    std::vector<int64_t> shape;
 
     ReshapeTensorDims(
         output_pair.second, info_->allow_batching_, std::get<1>(tensor_data),
-        &output_dims);
+        meta_data.Shape(), &shape);
 
-    std::vector<int64_t> shape;
     if (info_->allow_batching_) {
-      shape.push_back(batch_size_);
-    }
-    for (const auto& dim : output_dims) {
-      shape.push_back(dim);
+      shape.insert(shape.begin(), batch_size_);
     }
 
     // Use the memory type of the memory block as preferred memory type
@@ -729,8 +754,7 @@ EnsembleContext::ScheduleSteps(
         ModelInferStats::TimestampKind::kRequestStart);
     infer_stats->SetRequestedVersion(step->backend_->Version());
     infer_stats->SetMetricReporter(step->backend_->MetricReporter());
-    infer_stats->SetBatchSize(
-        step->request_provider_->RequestHeader().batch_size());
+    infer_stats->SetBatchSize(step->request_provider_->Request()->BatchSize());
     infer_stats->SetFailed(true);
 
     // Passing trace-related objects down

@@ -247,13 +247,9 @@ ServerStatusContextGetServerStatus(
   ni::ServerStatus server_status;
   nic::Error err = ctx->ctx->GetServerStatus(&server_status);
   if (err.IsOk()) {
-    if (server_status.SerializeToString(&ctx->status_buf)) {
-      *status = &ctx->status_buf[0];
-      *status_len = ctx->status_buf.size();
-    } else {
-      err = nic::Error(
-          ni::RequestStatusCode::INTERNAL, "failed to parse server status");
-    }
+    ctx->status_buf = server_status.ShortDebugString();
+    *status = &ctx->status_buf[0];
+    *status_len = ctx->status_buf.size();
   }
 
   return new nic::Error(err);
@@ -507,13 +503,9 @@ SharedMemoryControlContextGetStatus(
   ni::SharedMemoryStatus shm_status;
   nic::Error err = ctx->ctx->GetSharedMemoryStatus(&shm_status);
   if (err.IsOk()) {
-    if (shm_status.SerializeToString(&ctx->status_buf)) {
-      *status = &ctx->status_buf[0];
-      *status_len = ctx->status_buf.size();
-    } else {
-      err = nic::Error(
-          ni::RequestStatusCode::INTERNAL, "failed to parse server status");
-    }
+    ctx->status_buf = shm_status.ShortDebugString();
+    *status = &ctx->status_buf[0];
+    *status_len = ctx->status_buf.size();
   }
 
   return new nic::Error(err);
@@ -687,7 +679,8 @@ InferContextGetAsyncRunResults(InferContextCtx* ctx, uint64_t request_id)
 nic::Error*
 InferContextOptionsNew(
     nic::InferContext::Options** ctx, uint32_t flags, uint64_t batch_size,
-    ni::CorrelationID corr_id = 0)
+    ni::CorrelationID corr_id = 0, uint32_t priority = 0,
+    uint64_t timeout_us = 0)
 {
   std::unique_ptr<nic::InferContext::Options> uctx;
   nic::Error err = nic::InferContext::Options::Create(&uctx);
@@ -696,6 +689,8 @@ InferContextOptionsNew(
     (*ctx)->SetFlags(flags);
     (*ctx)->SetBatchSize(batch_size);
     (*ctx)->SetCorrelationId(corr_id);
+    (*ctx)->SetPriority(priority);
+    (*ctx)->SetTimeout(timeout_us);
     return nullptr;
   }
 

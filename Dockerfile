@@ -28,42 +28,9 @@
 # Multistage build.
 #
 
-ARG BASE_IMAGE=nvcr.io/nvidia/tensorrtserver:20.01-py3
-ARG PYTORCH_IMAGE=nvcr.io/nvidia/pytorch:20.01-py3
-ARG TENSORFLOW_IMAGE=nvcr.io/nvidia/tensorflow:20.01-tf1-py3
-
-############################################################################
-## TensorFlow stage: Use TensorFlow container to build
-############################################################################
-FROM ${TENSORFLOW_IMAGE} AS trtserver_tf
-
-# Modify the TF model loader to allow us to set the default GPU for
-# multi-GPU support
-COPY tools/patch/tensorflow /tmp/trtis/tools/patch/tensorflow
-RUN sha1sum -c /tmp/trtis/tools/patch/tensorflow/checksums && \
-    patch -i /tmp/trtis/tools/patch/tensorflow/cc/saved_model/loader.cc \
-          /opt/tensorflow/tensorflow-source/tensorflow/cc/saved_model/loader.cc && \
-    patch -i /tmp/trtis/tools/patch/tensorflow/BUILD \
-          /opt/tensorflow/tensorflow-source/tensorflow/BUILD && \
-    patch -i /tmp/trtis/tools/patch/tensorflow/tf_version_script.lds \
-          /opt/tensorflow/tensorflow-source/tensorflow/tf_version_script.lds && \
-    patch -i /tmp/trtis/tools/patch/tensorflow/nvbuild.sh \
-          /opt/tensorflow/nvbuild.sh && \
-    patch -i /tmp/trtis/tools/patch/tensorflow/nvbuildopts \
-          /opt/tensorflow/nvbuildopts && \
-    patch -i /tmp/trtis/tools/patch/tensorflow/bazel_build.sh \
-          /opt/tensorflow/bazel_build.sh
-
-# Copy tensorflow_backend_tf into TensorFlow so it builds into the
-# monolithic libtensorflow_cc library. We want tensorflow_backend_tf
-# to build against the TensorFlow protobuf since it interfaces with
-# that code.
-COPY src/backends/tensorflow/tensorflow_backend_tf.* \
-     /opt/tensorflow/tensorflow-source/tensorflow/
-
-# Build TensorFlow library for TRTIS
-WORKDIR /opt/tensorflow
-RUN ./nvbuild.sh --python3.6
+ARG BASE_IMAGE=nvcr.io/nvidia/tensorrtserver:20.02-py3
+ARG PYTORCH_IMAGE=nvcr.io/nvidia/pytorch:20.02-py3
+ARG TENSORFLOW_IMAGE=nvcr.io/nvidia/tensorflow:20.02-tf1-py3
 
 ############################################################################
 ## PyTorch stage: Use PyTorch container for Caffe2 and libtorch
@@ -143,23 +110,6 @@ RUN _CUDNN_VERSION=$(echo $CUDNN_VERSION | cut -d. -f1-2) && \
     mkdir -p /usr/local/cudnn-$_CUDNN_VERSION/cuda/lib64 && \
     ln -s /etc/alternatives/libcudnn_so /usr/local/cudnn-$_CUDNN_VERSION/cuda/lib64/libcudnn.so
 
-# Build and Install LLVM
-ARG LLVM_VERSION=6.0.1
-RUN cd /tmp && \
-    wget --no-verbose http://releases.llvm.org/$LLVM_VERSION/llvm-$LLVM_VERSION.src.tar.xz && \
-    xz -d llvm-$LLVM_VERSION.src.tar.xz && \
-    tar xvf llvm-$LLVM_VERSION.src.tar && \
-    cd llvm-$LLVM_VERSION.src && \
-    mkdir -p build && \
-    cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build . -- -j$(nproc) && \
-    cmake -DCMAKE_INSTALL_PREFIX=/usr/local/llvm-$LLVM_VERSION -DBUILD_TYPE=Release -P cmake_install.cmake && \
-    cd /tmp && \
-    rm -rf llvm*
-
-ENV LD_LIBRARY_PATH /usr/local/openblas/lib:$LD_LIBRARY_PATH
-
 # Build files will be in /workspace/build
 ARG COMMON_BUILD_ARGS="--skip_submodule_sync --parallel --build_shared_lib --use_openmp"
 RUN mkdir -p /workspace/build
@@ -175,16 +125,20 @@ RUN python3 /workspace/onnxruntime/tools/ci_build/build.py --build_dir /workspac
             --build
 
 ############################################################################
+## TensorFlow stage: Use TensorFlow container
+############################################################################
+FROM ${TENSORFLOW_IMAGE} AS trtserver_tf
+
+############################################################################
 ## Build stage: Build inference server
 ############################################################################
 FROM ${BASE_IMAGE} AS trtserver_build
 
-ARG TRTIS_VERSION=1.12.0dev
-ARG TRTIS_CONTAINER_VERSION=20.03dev
+ARG TRTIS_VERSION=1.13.0dev
+ARG TRTIS_CONTAINER_VERSION=20.04dev
 
 # libgoogle-glog0v5 is needed by caffe2 libraries.
 # libcurl4-openSSL-dev is needed for GCS
-# libh2o-dev is needed for h2o variant of HTTP server
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
             autoconf \
@@ -197,11 +151,7 @@ RUN apt-get update && \
             libssl-dev \
             libtool \
             libboost-dev \
-            libh2o-dev \
-            libh2o-evloop-dev \
-            libnuma-dev \
-            libwslay-dev \
-            libuv1-dev \
+            rapidjson-dev \
             patchelf \
             software-properties-common && \
     if [ $(cat /etc/os-release | grep 'VERSION_ID="16.04"' | wc -l) -ne 0 ]; then \
@@ -217,17 +167,20 @@ RUN apt-get update && \
     fi && \
     rm -rf /var/lib/apt/lists/*
 
-# TensorFlow libraries. Install the monolithic libtensorflow_cc and
-# create a link libtensorflow_framework.so -> libtensorflow_cc.so so
-# that custom tensorflow operations work correctly. Custom TF
-# operations link against libtensorflow_framework.so so it must be
-# present (and its functionality is provided by libtensorflow_cc.so).
+# TensorFlow libraries. Install the monolithic libtensorflow_trtis and
+# create links from libtensorflow_framework.so and
+# libtensorflow_cc.so.  Custom TF operations link against
+# libtensorflow_framework.so so it must be present (and that
+# functionality is provided by libtensorflow_trtis.so).
 COPY --from=trtserver_tf \
-     /usr/local/lib/tensorflow/libtensorflow_cc.so.1 /opt/tensorrtserver/lib/tensorflow/
+     /usr/local/lib/tensorflow/libtensorflow_trtis.so.1 \
+     /opt/tensorrtserver/lib/tensorflow/
 RUN cd /opt/tensorrtserver/lib/tensorflow && \
-    patchelf --set-rpath '$ORIGIN' libtensorflow_cc.so.1 && \
-    ln -sf libtensorflow_cc.so.1 libtensorflow_framework.so.1 && \
-    ln -sf libtensorflow_cc.so.1 libtensorflow_framework.so && \
+    patchelf --set-rpath '$ORIGIN' libtensorflow_trtis.so.1 && \
+    ln -sf libtensorflow_trtis.so.1 libtensorflow_trtis.so && \
+    ln -sf libtensorflow_trtis.so.1 libtensorflow_framework.so.1 && \
+    ln -sf libtensorflow_framework.so.1 libtensorflow_framework.so && \
+    ln -sf libtensorflow_trtis.so.1 libtensorflow_cc.so.1 && \
     ln -sf libtensorflow_cc.so.1 libtensorflow_cc.so
 
 # Caffe2 libraries
@@ -253,10 +206,14 @@ COPY --from=trtserver_pytorch /opt/conda/lib/python3.6/site-packages/torch/inclu
      /opt/tensorrtserver/include/torch
 COPY --from=trtserver_pytorch /opt/conda/lib/python3.6/site-packages/torch/lib/libtorch.so \
       /opt/tensorrtserver/lib/pytorch/
+COPY --from=trtserver_pytorch /opt/conda/lib/python3.6/site-packages/torch/lib/libtorch_cpu.so \
+      /opt/tensorrtserver/lib/pytorch/
+COPY --from=trtserver_pytorch /opt/conda/lib/python3.6/site-packages/torch/lib/libtorch_cuda.so \
+      /opt/tensorrtserver/lib/pytorch/
 COPY --from=trtserver_pytorch /opt/conda/lib/python3.6/site-packages/torch/lib/libcaffe2_nvrtc.so \
      /opt/tensorrtserver/lib/pytorch/
 RUN cd /opt/tensorrtserver/lib/pytorch && \
-    for i in `find . -mindepth 1 -maxdepth 1 -type f`; do \
+    for i in `find . -mindepth 1 -maxdepth 1 -type f -name '*\.so*'`; do \
         patchelf --set-rpath '$ORIGIN' $i; \
     done
 
@@ -293,7 +250,7 @@ COPY --from=trtserver_onnx /data/dldt/openvino_2019.3.376/deployment_tools/infer
      /opt/tensorrtserver/lib/onnx/
 RUN cd /opt/tensorrtserver/lib/onnx && \
     ln -sf libtbb.so.2 libtbb.so && \
-    for i in `find . -mindepth 1 -maxdepth 1 -type f`; do \
+    for i in `find . -mindepth 1 -maxdepth 1 -type f -name '*\.so*'`; do \
         patchelf --set-rpath '$ORIGIN' $i; \
     done
 
@@ -326,8 +283,11 @@ RUN LIBCUDA_FOUND=$(ldconfig -p | grep -v compat | awk '{print $1}' | grep libcu
                   -DTRTIS_ENABLE_TENSORRT=ON \
                   -DTRTIS_ENABLE_CAFFE2=ON \
                   -DTRTIS_ENABLE_ONNXRUNTIME=ON \
+                  -DTRTIS_ENABLE_ONNXRUNTIME_TENSORRT=ON \
                   -DTRTIS_ENABLE_ONNXRUNTIME_OPENVINO=ON \
                   -DTRTIS_ENABLE_PYTORCH=ON \
+                  -DTRTIS_ENABLE_GRPC_V2=ON \
+                  -DTRTIS_ENABLE_HTTP_V2=ON \
                   -DTRTIS_ONNXRUNTIME_INCLUDE_PATHS="/opt/tensorrtserver/include/onnxruntime" \
                   -DTRTIS_PYTORCH_INCLUDE_PATHS="/opt/tensorrtserver/include/torch" \
                   -DTRTIS_EXTRA_LIB_PATHS="/opt/tensorrtserver/lib;/opt/tensorrtserver/lib/tensorflow;/opt/tensorrtserver/lib/pytorch;/opt/tensorrtserver/lib/onnx" \
@@ -355,8 +315,8 @@ ENTRYPOINT ["/opt/tensorrtserver/nvidia_entrypoint.sh"]
 ############################################################################
 FROM ${BASE_IMAGE}
 
-ARG TRTIS_VERSION=1.12.0dev
-ARG TRTIS_CONTAINER_VERSION=20.03dev
+ARG TRTIS_VERSION=1.13.0dev
+ARG TRTIS_CONTAINER_VERSION=20.04dev
 
 ENV TENSORRT_SERVER_VERSION ${TRTIS_VERSION}
 ENV NVIDIA_TENSORRT_SERVER_VERSION ${TRTIS_CONTAINER_VERSION}
@@ -398,12 +358,7 @@ RUN apt-get update && \
         exit 1; \
     fi && \
     # Install common libraries for 18.04 and 16.04 (Including h2o dependencies)
-    apt-get install -y --no-install-recommends \
-            libgoogle-glog0v5 \
-            libh2o0.13 \
-            libh2o-evloop0.13 \
-            libnuma1 \
-            libwslay1 && \
+    apt-get install -y --no-install-recommends libgoogle-glog0v5 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/tensorrtserver

@@ -37,24 +37,30 @@ namespace nvidia { namespace inferenceserver {
 
 class OnnxBackend : public InferenceBackend {
  public:
-  OnnxBackend() = default;
+  explicit OnnxBackend(const double min_compute_capability)
+      : InferenceBackend(min_compute_capability)
+  {
+  }
   OnnxBackend(OnnxBackend&&) = default;
 
   // Create a context for execution for each instance for the
   // serialized plans specified in 'models'.
   Status CreateExecutionContexts(
-      const std::unordered_map<std::string, std::string>& paths);
+      const std::unordered_map<std::string, std::pair<bool, std::string>>&
+          paths);
   Status CreateExecutionContext(
       const std::string& instance_name, const int gpu_device,
       OrtSessionOptions* base_session_options,
-      const std::unordered_map<std::string, std::string>& paths);
+      const std::unordered_map<std::string, std::pair<bool, std::string>>&
+          paths);
 
  private:
   // Helper function for CreateExecutionContexts() so that session_options
   // will be released properly regardless of possible errors
   Status CreateExecutionContextsHelper(
       OrtSessionOptions* session_options,
-      const std::unordered_map<std::string, std::string>& paths);
+      const std::unordered_map<std::string, std::pair<bool, std::string>>&
+          paths);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(OnnxBackend);
@@ -93,8 +99,9 @@ class OnnxBackend : public InferenceBackend {
 
     // Set an input tensor from one or more payloads.
     Status SetInputTensor(
-        const std::string& name, const DataType data_type, const DimsList& dims,
-        size_t total_batch_size, std::vector<Scheduler::Payload>* payloads,
+        const std::string& name, const DataType data_type,
+        const std::vector<int64_t>& dims, size_t total_batch_size,
+        std::vector<Scheduler::Payload>* payloads,
         std::vector<std::unique_ptr<AllocatedMemory>>* input_buffers,
         std::vector<InputInfo>* inputs, std::vector<const char*>* input_names,
         bool* cuda_used);

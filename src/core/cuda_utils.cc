@@ -33,14 +33,14 @@
 namespace nvidia { namespace inferenceserver {
 
 Status
-EnablePeerAccess()
+EnablePeerAccess(const double min_compute_capability)
 {
 #ifdef TRTIS_ENABLE_GPU
   // If we can't enable peer access for one device pair, the best we can
   // do is skipping it...
   std::set<int> supported_gpus;
   bool all_enabled = false;
-  if (GetSupportedGPUs(supported_gpus).IsOk()) {
+  if (GetSupportedGPUs(&supported_gpus, min_compute_capability).IsOk()) {
     all_enabled = true;
     int can_access_peer = false;
     for (const auto& host : supported_gpus) {
@@ -99,24 +99,20 @@ CopyBuffer(
       copy_kind = cudaMemcpyDeviceToHost;
     }
 
-    cudaError_t err;
     if ((src_memory_type_id != dst_memory_type_id) &&
         (copy_kind == cudaMemcpyDeviceToDevice)) {
-      err = cudaMemcpyPeerAsync(
-          dst, dst_memory_type_id, src, src_memory_type_id, byte_size,
-          cuda_stream);
+      RETURN_IF_CUDA_ERR(
+          cudaMemcpyPeerAsync(
+              dst, dst_memory_type_id, src, src_memory_type_id, byte_size,
+              cuda_stream),
+          msg + ": failed to perform CUDA copy");
     } else {
-      err = cudaMemcpyAsync(dst, src, byte_size, copy_kind, cuda_stream);
+      RETURN_IF_CUDA_ERR(
+          cudaMemcpyAsync(dst, src, byte_size, copy_kind, cuda_stream),
+          msg + ": failed to perform CUDA copy");
     }
 
-    if (err != cudaSuccess) {
-      return Status(
-          RequestStatusCode::INTERNAL,
-          msg + ": failed to use CUDA copy : " +
-              std::string(cudaGetErrorString(err)));
-    } else {
-      *cuda_used = true;
-    }
+    *cuda_used = true;
 #else
     return Status(
         RequestStatusCode::INTERNAL,
@@ -125,5 +121,64 @@ CopyBuffer(
   }
   return Status::Success;
 }
+
+#ifdef TRTIS_ENABLE_GPU
+Status
+CheckGPUCompatibility(const int gpu_id, const double min_compute_capability)
+{
+  // Query the compute capability from the device
+  cudaDeviceProp cuprops;
+  cudaError_t cuerr = cudaGetDeviceProperties(&cuprops, gpu_id);
+  if (cuerr != cudaSuccess) {
+    return Status(
+        RequestStatusCode::INTERNAL,
+        "unable to get CUDA device properties for GPU ID" +
+            std::to_string(gpu_id) + ": " + cudaGetErrorString(cuerr));
+  }
+
+  double compute_compability = cuprops.major + (cuprops.minor / 10.0);
+  if ((compute_compability > min_compute_capability) ||
+      (abs(compute_compability - min_compute_capability) < 0.01)) {
+    return Status::Success;
+  } else {
+    return Status(
+        RequestStatusCode::UNSUPPORTED,
+        "gpu " + std::to_string(gpu_id) + " has compute capability '" +
+            std::to_string(cuprops.major) + "." +
+            std::to_string(cuprops.minor) +
+            "' which is less than the minimum supported of '" +
+            std::to_string(min_compute_capability) + "'");
+  }
+}
+
+Status
+GetSupportedGPUs(
+    std::set<int>* supported_gpus, const double min_compute_capability)
+{
+  // Make sure set is empty before starting
+  supported_gpus->clear();
+
+  int device_cnt;
+  cudaError_t cuerr = cudaGetDeviceCount(&device_cnt);
+  if ((cuerr == cudaErrorNoDevice) || (cuerr == cudaErrorInsufficientDriver)) {
+    device_cnt = 0;
+  } else if (cuerr != cudaSuccess) {
+    return Status(
+        RequestStatusCode::INTERNAL,
+        "unable to get number of CUDA devices: " +
+            std::string(cudaGetErrorString(cuerr)));
+  }
+
+  // populates supported_gpus
+  for (int gpu_id = 0; gpu_id < device_cnt; gpu_id++) {
+    Status status = CheckGPUCompatibility(gpu_id, min_compute_capability);
+    if (status.IsOk()) {
+      supported_gpus->insert(gpu_id);
+    }
+  }
+  return Status::Success;
+}
+
+#endif
 
 }}  // namespace nvidia::inferenceserver

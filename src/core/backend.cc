@@ -34,7 +34,6 @@
 #include "src/core/logging.h"
 #include "src/core/metric_model_reporter.h"
 #include "src/core/model_config_utils.h"
-#include "src/core/provider_utils.h"
 #include "src/core/sequence_batch_scheduler.h"
 #include "src/core/trtserver.h"
 
@@ -98,6 +97,15 @@ InferenceBackend::SetModelConfig(
     }
   }
 
+  if (config_.has_dynamic_batching()) {
+    default_priority_level_ =
+        config_.dynamic_batching().default_priority_level();
+    max_priority_level_ = config_.dynamic_batching().priority_levels();
+  } else {
+    default_priority_level_ = 0;
+    max_priority_level_ = 0;
+  }
+
   return Status::Success;
 }
 
@@ -133,23 +141,19 @@ InferenceBackend::SetConfiguredScheduler(
     RETURN_IF_ERROR(GenerateWarmupData(&samples));
   }
 
-  auto& model_name = Name();
-  auto version = Version();
   // [DLIS-1001] Assumption on runner tied to instance is not longer valid
-  auto OnWarmup = [this, &model_name, &version,
-                   &samples](uint32_t runner_idx) -> Status {
+  auto OnWarmup = [this, &samples](uint32_t runner_idx) -> Status {
     for (const auto& sample : samples) {
-      LOG_VERBOSE(1) << "model '" << model_name << "' instance "
-                     << std::to_string(runner_idx)
+      LOG_VERBOSE(1) << "model '" << sample.irequest_->ModelName()
+                     << "' instance " << std::to_string(runner_idx)
                      << " is running warmup sample '" << sample.sample_name_
                      << "'";
       std::vector<Scheduler::Payload> payloads;
       // Duplicate payloads to match batch size requirement.
       for (size_t idx = 0; idx < sample.batch_size_; idx++) {
         std::shared_ptr<InferRequestProvider> request_provider;
-        RETURN_IF_ERROR(InferRequestProvider::Create(
-            model_name, version, sample.request_header_, sample.input_buffer_,
-            &request_provider));
+        RETURN_IF_ERROR(
+            InferRequestProvider::Create(sample.irequest_, &request_provider));
         RETURN_IF_ERROR(
             request_provider->AddInputOverrides(sample.input_override_));
         payloads.emplace_back(nullptr, request_provider, nullptr, nullptr);
@@ -162,6 +166,7 @@ InferenceBackend::SetConfiguredScheduler(
       });
       RETURN_IF_ERROR(warmup_future.get());
     }
+
     return Status::Success;
   };
 
@@ -199,7 +204,10 @@ InferenceBackend::SetConfiguredScheduler(
         OnWarmup, OnRun, OnPeek, true /* dynamic_batching_enabled */,
         enforce_equal_shape_tensors,
         config_.dynamic_batching().preserve_ordering(), preferred_batch_sizes,
-        config_.dynamic_batching().max_queue_delay_microseconds(), &scheduler));
+        config_.dynamic_batching().max_queue_delay_microseconds(),
+        config_.dynamic_batching().default_queue_policy(),
+        config_.dynamic_batching().priority_levels(),
+        config_.dynamic_batching().priority_queue_policy(), &scheduler));
   } else {
     // Default scheduler. Use dynamic batch scheduler (with batching
     // disabled) as the default scheduler.
@@ -221,7 +229,8 @@ InferenceBackend::Init(
     const std::string& path, const ModelConfig& config,
     const std::string& platform)
 {
-  RETURN_IF_ERROR(ValidateModelConfig(config, platform));
+  RETURN_IF_ERROR(
+      ValidateModelConfig(config, platform, min_compute_capability_));
   RETURN_IF_ERROR(SetModelConfig(path, config));
 
   return Status::Success;
@@ -344,18 +353,26 @@ InferenceBackend::GenerateWarmupData(std::vector<WarmupData>* samples)
       random_buffer[offset] = rand();
     }
 
-    // use batch-1 for every request, batch size is simulated by populating
-    // requests for single run.
-    warmup_data.request_header_.set_batch_size(1);
+    // Use batch-1 for every request, batch size is simulated by
+    // populating requests for single run. FIXMEV2 once
+    // protocol_version 2 is the only one remove SetBatchSize and
+    // adjust the input/output tensors to have appropriate shape
+    warmup_data.irequest_ =
+        std::make_shared<InferenceRequest>(Name(), Version(), Version(), 1);
+    warmup_data.irequest_->SetBatchSize(1);
 
     // Request all outputs
     for (const auto& io : Config().output()) {
-      auto output = warmup_data.request_header_.add_output();
-      output->set_name(io.name());
+      RETURN_IF_ERROR(warmup_data.irequest_->AddRequestedOutput(io.name()));
     }
 
     // Second pass to prepare input buffer and request header
     for (const auto& input_meta : warmup_setting.inputs()) {
+      std::vector<int64_t> input_meta_shape;
+      for (auto d : input_meta.second.dims()) {
+        input_meta_shape.push_back(d);
+      }
+
       // If not found in model inputs, then treat it as control tensor
       const ModelInput* input_config;
       if (!GetInput(input_meta.first, &input_config).IsOk()) {
@@ -364,7 +381,7 @@ InferenceBackend::GenerateWarmupData(std::vector<WarmupData>* samples)
               std::make_shared<InferRequestProvider::InputOverrideMap>();
         }
 
-        auto element_count = GetElementCount(input_meta.second.dims());
+        auto element_count = GetElementCount(input_meta_shape);
         auto batch_byte_size =
             element_count * GetDataTypeByteSize(input_meta.second.data_type());
         if (batch_byte_size == 0) {
@@ -372,7 +389,7 @@ InferenceBackend::GenerateWarmupData(std::vector<WarmupData>* samples)
         }
 
         InferRequestProvider::InputOverride value_override;
-        value_override.dims_ = input_meta.second.dims();
+        value_override.dims_ = input_meta_shape;
         value_override.datatype_ = input_meta.second.data_type();
         switch (input_meta.second.input_data_type_case()) {
           case ModelWarmup_Input::InputDataTypeCase::kZeroData:
@@ -422,11 +439,7 @@ InferenceBackend::GenerateWarmupData(std::vector<WarmupData>* samples)
         continue;
       }
 
-      auto input = warmup_data.request_header_.add_input();
-      input->set_name(input_meta.first);
-      (*input->mutable_dims()) = input_meta.second.dims();
-
-      auto element_count = GetElementCount(input_meta.second.dims());
+      auto element_count = GetElementCount(input_meta_shape);
       auto batch_byte_size =
           element_count * GetDataTypeByteSize(input_meta.second.data_type());
       if (batch_byte_size == 0) {
@@ -476,15 +489,15 @@ InferenceBackend::GenerateWarmupData(std::vector<WarmupData>* samples)
                   "' to have input_data_type set");
       }
 
-      auto pr = warmup_data.input_buffer_.emplace(input_meta.first, nullptr);
-      pr.first->second.reset(new MemoryReference());
-      static_cast<MemoryReference*>(pr.first->second.get())
-          ->AddBuffer(
-              allocated_ptr, batch_byte_size,
-              TRTSERVER_MEMORY_CPU /* memory_type */, 0 /* memory_type_id */);
-
-      input->set_batch_byte_size(batch_byte_size);
+      InferenceRequest::Input* input = nullptr;
+      RETURN_IF_ERROR(warmup_data.irequest_->AddInput(
+          input_meta.first, input_meta_shape, batch_byte_size, &input));
+      RETURN_IF_ERROR(input->AppendData(
+          allocated_ptr, batch_byte_size,
+          TRTSERVER_MEMORY_CPU /* memory_type */, 0 /* memory_type_id */));
     }
+
+    RETURN_IF_ERROR(warmup_data.irequest_->PrepareForInference(*this));
   }
 
   return Status::Success;

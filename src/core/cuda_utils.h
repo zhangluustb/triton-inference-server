@@ -33,13 +33,27 @@
 
 namespace nvidia { namespace inferenceserver {
 
+#ifdef TRTIS_ENABLE_GPU
+#define RETURN_IF_CUDA_ERR(X, MSG)                   \
+  do {                                               \
+    cudaError_t err__ = (X);                         \
+    if (err__ != cudaSuccess) {                      \
+      return Status(                                 \
+          RequestStatusCode::INTERNAL,               \
+          (MSG) + ": " + cudaGetErrorString(err__)); \
+    }                                                \
+  } while (false)
+#endif  // TRTIS_ENABLE_GPU
+
 #ifndef TRTIS_ENABLE_GPU
 using cudaStream_t = void*;
 #endif  // TRTIS_ENABLE_GPU
 
 /// Enable peer access for all GPU device pairs
+/// \param min_compute_capability The minimum support CUDA compute
+/// capability.
 /// \return The error status. A non-OK status means not all pairs are enabled
-Status EnablePeerAccess();
+Status EnablePeerAccess(const double min_compute_capability);
 
 /// Copy buffer from 'src' to 'dst' for given 'byte_size'. The buffer location
 /// is identified by the memory type and id, and the corresponding copy will be
@@ -57,5 +71,26 @@ Status CopyBuffer(
     const TRTSERVER_Memory_Type dst_memory_type,
     const int64_t dst_memory_type_id, const size_t byte_size, const void* src,
     void* dst, cudaStream_t cuda_stream, bool* cuda_used);
+
+#ifdef TRTIS_ENABLE_GPU
+/// Validates the compute capability of the GPU indexed
+/// \param gpu_id The index of the target GPU.
+/// \param min_compute_capability The minimum support CUDA compute
+/// capability.
+/// \return The error status. A non-OK status means the target GPU is
+///  not supported
+Status CheckGPUCompatibility(
+    const int gpu_id, const double min_compute_capability);
+
+/// Obtains a set of gpu ids that is supported by TRTIS.
+/// \param supported_gpus Returns the set of integers which is
+///  populated by ids of supported GPUS
+/// \param min_compute_capability The minimum support CUDA compute
+/// capability.
+/// \return The error status. A non-ok status means there were
+/// errors encountered while querying GPU devices.
+Status GetSupportedGPUs(
+    std::set<int>* supported_gpus, const double min_compute_capability);
+#endif
 
 }}  // namespace nvidia::inferenceserver

@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -29,6 +29,8 @@ syntax = "proto3";
 package nvidia.inferenceserver;
 
 //@@.. cpp:namespace:: nvidia::inferenceserver
+
+import "model_config.proto";
 
 //@@.. cpp:var:: message InferSharedMemory
 //@@
@@ -223,6 +225,29 @@ message InferRequestHeader
   //@@     request.
   //@@
   repeated Output output = 3;
+
+  //@@  .. cpp:var:: uint32 priority
+  //@@
+  //@@     The priority value of this request. If priority handling is not
+  //@@     enable for the model, then this value is ignored. The default value
+  //@@     is 0 which indicates that the request will be assigned the default
+  //@@     priority associated with the model.
+  //@@
+  uint32 priority = 7;
+
+  //@@  .. cpp:var:: uint64 timeout_microseconds
+  //@@
+  //@@     The timeout for this request. This value overrides the timeout
+  //@@     specified by the model, if the model allows timeout override and if
+  //@@     the value is less than the default timeout specified by the model.
+  //@@     If the request cannot be processed within this timeout, the request
+  //@@     will be handled based on the model's timeout policy.
+  //@@     Note that request for ensemble model cannot override the timeout
+  //@@     values for the composing models.
+  //@@     The default value is 0 which indicates that the request does not
+  //@@     override the model's timeout value.
+  //@@
+  uint64 timeout_microseconds = 8;
 }
 
 //@@
@@ -246,6 +271,12 @@ message InferResponseHeader
     //@@       The name of the output tensor.
     //@@
     string name = 1;
+
+    //@@    .. cpp:var:: DataType data_type
+    //@@
+    //@@       The datatype of the output tensor.
+    //@@
+    DataType data_type = 4;
 
     //@@    .. cpp:var:: message Raw
     //@@

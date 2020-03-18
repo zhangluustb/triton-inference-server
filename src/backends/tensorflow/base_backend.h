@@ -38,7 +38,10 @@ namespace nvidia { namespace inferenceserver {
 // Base for both GraphDef and SavedModel backends
 class BaseBackend : public InferenceBackend {
  public:
-  BaseBackend() = default;
+  explicit BaseBackend(const double min_compute_capability)
+      : InferenceBackend(min_compute_capability)
+  {
+  }
   BaseBackend(BaseBackend&&) = default;
 
   Status Init(
@@ -89,8 +92,8 @@ class BaseBackend : public InferenceBackend {
 
     // Set an input tensor data from payloads.
     Status SetInput(
-        const std::string& name, const DataType datatype, const DimsList& dims,
-        const size_t total_batch_size,
+        const std::string& name, const DataType datatype,
+        const std::vector<int64_t>& dims, const size_t total_batch_size,
         std::vector<Scheduler::Payload>* payloads,
         std::vector<InputInfo>* inputs, TRTISTF_TensorList** input_tensors,
         bool* cuda_copy);

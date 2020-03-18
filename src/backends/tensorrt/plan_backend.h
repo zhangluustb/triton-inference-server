@@ -39,7 +39,10 @@ namespace nvidia { namespace inferenceserver {
 
 class PlanBackend : public InferenceBackend {
  public:
-  PlanBackend() = default;
+  explicit PlanBackend(const double min_compute_capability)
+      : InferenceBackend(min_compute_capability)
+  {
+  }
   PlanBackend(PlanBackend&&) = default;
   ~PlanBackend();
 
@@ -62,7 +65,7 @@ class PlanBackend : public InferenceBackend {
   friend std::ostream& operator<<(std::ostream&, const PlanBackend&);
 
   Status PeekShapeTensor(
-      uint32_t runner_idx, const InferRequestHeader::Input& input,
+      uint32_t runner_idx, const InferenceRequest::Input& input,
       const Scheduler::Payload& payload, std::vector<int64_t>* shape);
 
   // For each model instance there is a context.
@@ -111,10 +114,11 @@ class PlanBackend : public InferenceBackend {
 
     void ProcessResponse(
         size_t context_idx, std::shared_ptr<SyncQueue<size_t>> context_queue);
+
     // See BackendContext::PeekShapeTensor()
     Status PeekShapeTensor(
-        const InferRequestHeader::Input& input,
-        const Scheduler::Payload& payload, std::vector<int64_t>* shape);
+        const InferenceRequest::Input& input, const Scheduler::Payload& payload,
+        std::vector<int64_t>* shape) override;
 
     // A struct to hold TensorRT execution context and its meta data, a backend
     // context can have multiple of this struct if multiple optimization

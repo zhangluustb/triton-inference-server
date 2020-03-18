@@ -26,52 +26,118 @@
 
 cmake_minimum_required (VERSION 3.5)
 
+if(${TRTIS_ENABLE_HTTP_V2} OR ${TRTIS_ENABLE_GRPC_V2})
+  if(NOT WIN32)
+    #
+    # libcshmv2.so
+    #
+    add_library(cshmv2 SHARED shared_memory/shared_memory.cc)
+    if(${TRTIS_ENABLE_GPU})
+      target_include_directories(cshmv2 PRIVATE ${CUDA_INCLUDE_DIRS})
+    endif() # TRTIS_ENABLE_GPU
+    target_link_libraries(cshmv2 rt)
+
+    #
+    # libccudashmv2.so
+    #
+    if(${TRTIS_ENABLE_GPU})
+      add_library(ccudashmv2 SHARED cuda_shared_memory/cuda_shared_memory.cc)
+      target_include_directories(ccudashmv2 PUBLIC ${CUDA_INCLUDE_DIRS})
+      target_link_libraries(ccudashmv2
+        PRIVATE ${CUDA_LIBRARIES}
+        PRIVATE -lb64)
+    endif() # TRTIS_ENABLE_GPU
+  endif() # NOT WIN32
+
+  configure_file(../../../../../VERSION VERSION COPYONLY)
+  configure_file(utils.py utils.py COPYONLY)
+
+  if(NOT WIN32)
+    configure_file(shared_memory/__init__.py shared_memory/__init__.py COPYONLY)
+    if(${TRTIS_ENABLE_GPU})
+      configure_file(cuda_shared_memory/__init__.py cuda_shared_memory/__init__.py COPYONLY)
+    endif() # TRTIS_ENABLE_GPU
+  endif() # NOT WIN32
+endif() # TRTIS_ENABLE_HTTP_V2 || TRTIS_ENABLE_GRPC_V2
+
+
 #
-# Wheel file
+# HTTP wheel file
 #
-set(wheel_stamp_file "stamp.whl")
-configure_file(../../../../../VERSION VERSION COPYONLY)
-configure_file(httpclient.py httpclient.py COPYONLY)
-configure_file(grpcclient.py grpcclient.py COPYONLY)
-configure_file(common.py common.py COPYONLY)
-configure_file(setup.py setup.py COPYONLY)
+if(${TRTIS_ENABLE_HTTP_V2})
+  set(http_wheel_stamp_file "http_stamp.whl")
+  configure_file(httpclient.py httpclient.py COPYONLY)
+  configure_file(http_setup.py http_setup.py COPYONLY)
 
-add_custom_command(
-  OUTPUT "${wheel_stamp_file}"
-  COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/build_wheel.sh"
-  ARGS "${CMAKE_CURRENT_BINARY_DIR}"
-  DEPENDS
-    ${CMAKE_CURRENT_BINARY_DIR}/VERSION
-    ${CMAKE_CURRENT_BINARY_DIR}/httpclient.py
-    ${CMAKE_CURRENT_BINARY_DIR}/grpcclient.py
-    ${CMAKE_CURRENT_BINARY_DIR}/common.py
-    ${CMAKE_CURRENT_BINARY_DIR}/setup.py
-    proto-py-library
-    grpc-v2-py-library
-)
+  add_custom_command(
+    OUTPUT "${http_wheel_stamp_file}"
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/http_build_wheel.sh"
+    ARGS "${CMAKE_CURRENT_BINARY_DIR}/http/"
+    DEPENDS
+      ${CMAKE_CURRENT_BINARY_DIR}/VERSION
+      ${CMAKE_CURRENT_BINARY_DIR}/httpclient.py
+      ${CMAKE_CURRENT_BINARY_DIR}/utils.py
+      ${CMAKE_CURRENT_BINARY_DIR}/http_setup.py
+  )
 
-add_custom_target(
-  client-wheel-2 ALL
-  DEPENDS
-    "${wheel_stamp_file}"
-)
-add_dependencies(
-  client-wheel
-  model-config-library grpc-v2-library proto-library
-)
+  add_custom_target(
+    client-wheel-http ALL
+    DEPENDS
+      "${http_wheel_stamp_file}"
+  )
 
-file(
-  GLOB generated-py
-  ${CMAKE_CURRENT_BINARY_DIR}/../../../core/*_pb2.py
-  ${CMAKE_CURRENT_BINARY_DIR}/../../../core/*_grpc.py
-)
+  install(
+    CODE "file(GLOB _Wheel \"${CMAKE_CURRENT_BINARY_DIR}/http/tritonhttpclient-*.whl\")"
+    CODE "file(INSTALL \${_Wheel} DESTINATION \"${CMAKE_INSTALL_PREFIX}/python\")"
+  )
+endif() # TRTIS_ENABLE_HTTP_V2
 
-install(
-  FILES ${generated-py}
-  DESTINATION python
-)
 
-install(
-  CODE "file(GLOB _Wheel \"${CMAKE_CURRENT_BINARY_DIR}/tensorrtserverV2*.whl\")"
-  CODE "file(INSTALL \${_Wheel} DESTINATION \"${CMAKE_INSTALL_PREFIX}/python\")"
-)
+#
+# gRPC wheel file
+#
+if(${TRTIS_ENABLE_GRPC_V2})
+  set(grpc_wheel_stamp_file "grpc_stamp.whl")
+  
+  configure_file(grpcclient.py grpcclient.py COPYONLY)
+  configure_file(grpc_setup.py grpc_setup.py COPYONLY)
+  
+  add_custom_command(
+    OUTPUT "${grpc_wheel_stamp_file}"
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/grpc_build_wheel.sh"
+    ARGS "${CMAKE_CURRENT_BINARY_DIR}/grpc/"
+    DEPENDS
+      ${CMAKE_CURRENT_BINARY_DIR}/VERSION
+      ${CMAKE_CURRENT_BINARY_DIR}/grpcclient.py
+      ${CMAKE_CURRENT_BINARY_DIR}/utils.py
+      ${CMAKE_CURRENT_BINARY_DIR}/grpc_setup.py
+      proto-py-library
+      grpc-v2-py-library
+  )
+  
+  add_custom_target(
+    client-wheel-grpc ALL
+    DEPENDS
+      "${grpc_wheel_stamp_file}"
+  )
+  add_dependencies(
+    client-wheel-grpc
+    model-config-library grpc-v2-library proto-library
+  )
+  
+  file(
+    GLOB generated-py
+    ${CMAKE_CURRENT_BINARY_DIR}/../../../core/*_pb2.py
+    ${CMAKE_CURRENT_BINARY_DIR}/../../../core/*_grpc.py
+  )
+  
+  install(
+    FILES ${generated-py}
+    DESTINATION python
+  )
+  
+  install(
+    CODE "file(GLOB _Wheel \"${CMAKE_CURRENT_BINARY_DIR}/grpc/tritongrpcclient-*.whl\")"
+    CODE "file(INSTALL \${_Wheel} DESTINATION \"${CMAKE_INSTALL_PREFIX}/python\")"
+  )
+endif() # TRTIS_ENABLE_GRPC_V2
