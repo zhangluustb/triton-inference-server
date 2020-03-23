@@ -30,7 +30,7 @@
 Quickstart
 ==========
 
-The TensorRT Inference Server is available in two ways:
+The Triton Inference Server is available in two ways:
 
 * As a pre-built Docker container available from the `NVIDIA GPU Cloud
   (NGC) <https://ngc.nvidia.com>`_. For more information, see
@@ -49,11 +49,11 @@ Regardless of which method you choose (starting with a pre-built
 container from NGC or building from source), you must perform the
 following prerequisite steps:
 
-* Clone the TensorRT Inference Server GitHub repo. Even if you choose
+* Clone the Triton Inference Server GitHub repo. Even if you choose
   to get the pre-built inference server from NGC, you need the GitHub
   repo for the example model repository and to build the example
   applications. Go to
-  https://github.com/NVIDIA/tensorrt-inference-server and then select
+  https://github.com/NVIDIA/triton-inference-server and then select
   the *clone* or *download* drop down button. After clone the repo be
   sure to select the r<xx.yy> release branch that corresponds to the
   version of the server you want to use::
@@ -90,16 +90,16 @@ Using A Prebuilt Docker Container
 
 Make sure you log into NGC as described in
 :ref:`section-quickstart-prerequisites` before attempting the steps in this
-section.  Use docker pull to get the TensorRT Inference Server
+section.  Use docker pull to get the Triton Inference Server
 container from NGC::
 
-  $ docker pull nvcr.io/nvidia/tensorrtserver:<xx.yy>-py3
+  $ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3
 
 Where <xx.yy> is the version of the inference server that you want to
 pull. Once you have the container follow these steps to run the server
 and the example client applications.
 
-#. :ref:`Run the inference server <section-quickstart-run-tensorrt-inference-server>`.
+#. :ref:`Run the inference server <section-quickstart-run-triton-inference-server>`.
 #. :ref:`Verify that the server is running correct <section-quickstart-verify-inference-server-status>`.
 #. :ref:`Get the example client applications <section-quickstart-getting-the-examples>`.
 #. :ref:`Run the image classification example <section-quickstart-running-the-image-classification-example>`.
@@ -120,12 +120,12 @@ under-development version)::
 
 Then use docker to build::
 
-  $ docker build --pull -t tensorrtserver .
+  $ docker build --pull -t tritonserver .
 
 After the build completes follow these steps to run the server and the
 example client applications.
 
-#. :ref:`Run the inference server <section-quickstart-run-tensorrt-inference-server>`.
+#. :ref:`Run the inference server <section-quickstart-run-triton-inference-server>`.
 #. :ref:`Verify that the server is running correct <section-quickstart-verify-inference-server-status>`.
 #. :ref:`Get the example client applications <section-quickstart-getting-the-examples>`.
 #. :ref:`Run the image classification example <section-quickstart-running-the-image-classification-example>`.
@@ -138,22 +138,22 @@ Building With CMake
 Make sure you complete the steps in :ref:`section-quickstart-prerequisites`
 before attempting to build the inference server. To build with CMake
 you must decide which features of the inference server you want, build
-any required dependencies, and the lastly build the TensorRT Inference
+any required dependencies, and the lastly build the Triton Inference
 Server itself. See :ref:`section-building-the-server-with-cmake` for
 details on how to build with CMake.
 
 After the build completes follow these steps to run the server and the
 example client applications.
 
-#. :ref:`Run the inference server <section-quickstart-run-tensorrt-inference-server>`.
+#. :ref:`Run the inference server <section-quickstart-run-triton-inference-server>`.
 #. :ref:`Verify that the server is running correct <section-quickstart-verify-inference-server-status>`.
 #. :ref:`Get the example client applications <section-quickstart-getting-the-examples>`.
 #. :ref:`Run the image classification example <section-quickstart-running-the-image-classification-example>`.
 
-.. _section-quickstart-run-tensorrt-inference-server:
+.. _section-quickstart-run-triton-inference-server:
 
-Run TensorRT Inference Server
------------------------------
+Run Triton Inference Server
+---------------------------
 
 Assuming the example model repository is available in
 /full/path/to/example/model/repository, if you build using Docker use
@@ -161,9 +161,9 @@ the following command to run the inference server container::
 
   $ nvidia-docker run --rm --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 -p8000:8000 -p8001:8001 -p8002:8002 -v/full/path/to/example/model/repository:/models <docker image> trtserver --model-repository=/models
 
-Where <docker image> is *nvcr.io/nvidia/tensorrtserver:<xx.yy>-py3* if
+Where <docker image> is *nvcr.io/nvidia/tritonserver:<xx.yy>-py3* if
 you pulled the inference server container from NGC, or is
-*tensorrtserver* if you built the inference server from source.
+*tritonserver* if you built the inference server from source.
 
 If you built using CMake run the inference server directly on your host system::
 
@@ -229,12 +229,12 @@ Make sure you log into NGC as described in
 section. Use docker pull to get the client libraries and examples
 container from NGC::
 
-  $ docker pull nvcr.io/nvidia/tensorrtserver:<xx.yy>-py3-clientsdk
+  $ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
 
 Where <xx.yy> is the version that you want to pull. Run the client
 image so that the client examples can access the inference server::
 
-  $ docker run -it --rm --net=host nvcr.io/nvidia/tensorrtserver:<xx.yy>-py3-clientsdk
+  $ docker run -it --rm --net=host nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
 
 It is also possible to build the client examples with or without
 Docker and for some platforms pre-compiled client examples are
@@ -246,7 +246,7 @@ available. For more information, see
 Running The Image Classification Example
 ----------------------------------------
 
-From within the tensorrtserver_client image, run the example
+From within the tritonserver_client image, run the example
 image-client application to perform image classification using the
 example resnet50_netdef from the example model repository.
 

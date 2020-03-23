@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -30,7 +30,7 @@
 Model Repository
 ================
 
-The TensorRT Inference Server accesses models from one or more locally
+The Triton Inference Server accesses models from one or more locally
 accessible file paths, from Google Cloud Storage, and from Amazon
 S3. These paths are specified when the server is started using the
 -\\-model-repository option.
@@ -392,7 +392,7 @@ Custom Backend API
 ^^^^^^^^^^^^^^^^^^
 
 A custom backend must implement the C interface defined in `custom.h
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/backends/custom/custom.h>`_. The
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/backends/custom/custom.h>`_. The
 interface is also documented in the API Reference.
 
 Example Custom Backend
@@ -400,7 +400,7 @@ Example Custom Backend
 
 Several example custom backends can be found in the `src/custom
 directory
-<https://github.com/NVIDIA/tensorrt-inference-server/tree/master/src/custom>`_. For
+<https://github.com/NVIDIA/triton-inference-server/tree/master/src/custom>`_. For
 more information on building your own custom backends as well as a
 simple example you can build yourself, see
 :ref:`section-building-a-custom-backend`.
@@ -417,5 +417,5 @@ so each model version subdirectory must exist but should be empty.
 
 An example of an ensemble backend in a model repository can be found in the
 `docs/examples/ensemble_model_repository/preprocess_resnet50_ensemble
-<https://github.com/NVIDIA/tensorrt-inference-server/tree/master/docs/examples/ensemble_model_repository/preprocess_resnet50_ensemble>`_
+<https://github.com/NVIDIA/triton-inference-server/tree/master/docs/examples/ensemble_model_repository/preprocess_resnet50_ensemble>`_
 directory.

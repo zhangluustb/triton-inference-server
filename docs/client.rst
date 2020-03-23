@@ -31,7 +31,7 @@ Client Libraries
 ================
 
 The inference server *client libraries* make it easy to communicate
-with the TensorRT Inference Server from your C++ or Python
+with the Triton Inference Server from your C++ or Python
 application. Using these libraries you can send either HTTP or GRPC
 requests to the server to check status or health and to make inference
 requests. These libraries also support using system and CUDA shared memory for
@@ -79,7 +79,7 @@ should match the version of the inference server you are using::
 Then, issue the following command to build the C++ client library and
 a Python wheel file for the Python client library::
 
-  $ docker build -t tensorrtserver_client -f Dockerfile.client .
+  $ docker build -t tritonserver_client -f Dockerfile.client .
 
 You can optionally add *-\\-build-arg "BASE_IMAGE=<base_image>"* to set
 the base image that you want the client library built for. Must be a
@@ -87,7 +87,7 @@ Ubuntu CUDA devel image to be able to build CUDA shared memory support.
 If CUDA shared memory support is not required, you can use an Ubuntu
 16.04 or 18.04 as the base image.
 
-After the build completes the tensorrtserver_client docker image will
+After the build completes the tritonserver_client docker image will
 contain the built client libraries in /workspace/install/lib, the
 corresponding headers in /workspace/install/include, and the Python
 wheel file in /workspace/install/python. The image will also contain
@@ -183,7 +183,7 @@ Download From GitHub
 
 An alternative to building the client library is to download the
 pre-built client libraries from the `GitHub release page
-<https://github.com/NVIDIA/tensorrt-inference-server/releases>`_
+<https://github.com/NVIDIA/triton-inference-server/releases>`_
 corresponding to the release you are interested in. The client
 libraries are found in the "Assets" section of the release page in a
 tar file named after the version of the release and the OS, for
@@ -191,12 +191,12 @@ example, v1.2.0_ubuntu1604.clients.tar.gz.
 
 The pre-built libraries can be used on the corresponding host system
 (for example Ubuntu-16.04 or Ubuntu-18.04) or you can install them
-into the TensorRT Inference Server container to have both the clients
+into the Triton Inference Server container to have both the clients
 and server in the same container::
 
   $ mkdir clients
   $ cd clients
-  $ wget https://github.com/NVIDIA/tensorrt-inference-server/releases/download/<tarfile_path>
+  $ wget https://github.com/NVIDIA/triton-inference-server/releases/download/<tarfile_path>
   $ tar xzf <tarfile_name>
 
 After installing the libraries can be found in lib/, the corresponding
@@ -219,7 +219,7 @@ instructions, see the `NGC Getting Started Guide
 Use docker pull to get the client libraries and examples container
 from NGC::
 
-  $ docker pull nvcr.io/nvidia/tensorrtserver:<xx.yy>-py3-clientsdk
+  $ docker pull nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
 
 Where <xx.yy> is the version that you want to pull.
 
@@ -274,19 +274,19 @@ Client API
 The C++ client API exposes a class-based interface for querying server
 and model status and for performing inference. The commented interface
 is available at `src/clients/c++/library/request.h.in
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/library/request.h.in>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/library/request.h.in>`_
 and in the API Reference.
 
 The Python client API provides similar capabilities as the C++
 API. The commented interface is available at
 `src/clients/python/api_v1/library/\_\_init\_\_.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/library/__init__.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/library/__init__.py>`_
 and in the API Reference.
 
 A simple C++ example application at `src/clients/c++/examples/simple\_client.cc.in
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_client.cc.in>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_client.cc.in>`_
 and a Python version at `src/clients/python/api_v1/examples/simple\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/simple_client.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/simple_client.py>`_
 demonstrate basic client API usage.
 
 To run the C++ version of the simple example, first build or
@@ -316,9 +316,9 @@ System Shared Memory
 
 A simple C++ example application using system shared memory at
 `src/clients/c++/examples/simple\_shm\_client.cc
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_shm_client.cc>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_shm_client.cc>`_
 and a Python version at `src/clients/python/api_v1/examples/simple\_shm\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/simple_shm_client.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/simple_shm_client.py>`_
 demonstrate the usage of shared memory with the client API.
 
 To run the C++ version of the simple system shared memory example, first
@@ -338,7 +338,7 @@ build or download it as described in
   15 - 1 = 14
 
 We have added a simple `system shared memory module
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/library/shared_memory/__init__.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/library/shared_memory/__init__.py>`_
 that extends the Python client API to create, set and destroy system shared
 memory. To run the Python version of the simple system shared memory example,
 first build or download it as described in
@@ -352,9 +352,9 @@ CUDA Shared Memory
 
 A simple C++ example application using CUDA shared memory at
 `src/clients/c++/examples/simple\_cuda\_shm\_client.cc
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_cuda_shm_client.cc>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_cuda_shm_client.cc>`_
 and a Python version at `src/clients/python/api_v1/examples/simple\_shm\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/simple_cuda_shm_client.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/simple_cuda_shm_client.py>`_
 demonstrate the usage of shared memory with the client API.
 
 To run the C++ version of the simple CUDA shared memory example, first
@@ -374,7 +374,7 @@ $ simple_cuda_shm_client
 15 - 1 = 14
 
 We have added a simple `CUDA shared memory module
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/library/cuda_shared_memory/__init__.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/library/cuda_shared_memory/__init__.py>`_
 that extends the Python client API to create, set and destroy CUDA shared
 memory. To run the Python version of the simple CUDA shared memory example,
 first build or download it as described in
@@ -395,9 +395,9 @@ SetRaw().
 
 String tensors are demonstrated in the C++ example application at
 `src/clients/c++/examples/simple\_string\_client.cc
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_string_client.cc>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_string_client.cc>`_
 and a Python version at `src/clients/python/api_v1/examples/simple\_string\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/simple_string_client.py>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/simple_string_client.py>`_.
 
 .. _section-client-api-stateful-models:
 
@@ -421,10 +421,10 @@ async_run() methods in the Python API.
 The use of correlation ID and start and end flags are demonstrated in
 the C++ example application at
 `src/clients/c++/examples/simple\_sequence\_client.cc
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_sequence_client.cc>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/simple_sequence_client.cc>`_
 and a Python version at
 `src/clients/python/api_v1/examples/simple\_sequence\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/simple_sequence_client.py>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/simple_sequence_client.py>`_.
 
 Shape Tensor
 ^^^^^^^^^^^^

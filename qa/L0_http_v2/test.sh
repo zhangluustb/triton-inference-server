@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+# Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -25,43 +25,78 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+if [ "$#" -ge 1 ]; then
+    REPO_VERSION=$1
+fi
+if [ -z "$REPO_VERSION" ]; then
+    echo -e "Repository version must be specified"
+    echo -e "\n***\n*** Test Failed\n***"
+    exit 1
+fi
+
 export CUDA_VISIBLE_DEVICES=0
 
-TEST_PY=./preprocess_test.py
-CLIENT_LOG="./client.log"
+set +e
 
+RET=0
+
+SIMPLE_HEALTH_CLIENT=../clients/simple_http_v2_health_metadata.py
+SIMPLE_INFER_CLIENT=../clients/simple_http_v2_infer_client.py
+
+rm -f *.log
+rm -f *.log.*
+
+CLIENT_LOG=`pwd`/client.log
+DATADIR=`pwd`/models
 SERVER=/opt/tensorrtserver/bin/trtserver
-SERVER_ARGS=--model-repository=`pwd`/models
-SERVER_LOG="./inference_server.log"
-
-EXPECTED_RES=preprocessed_mug_image
+SERVER_ARGS="--model-repository=$DATADIR --api-version 2"
 source ../common/util.sh
 
-rm -f $CLIENT_LOG $SERVER_LOG
-
-run_server
+# FIXMEPV2
+# Cannot use run_server since it repeatedly curls the (old) HTTP health endpoint to know
+# when the server is ready. This endpoint would not exist in future.
+run_server_nowait
+sleep 10
 if [ "$SERVER_PID" == "0" ]; then
     echo -e "\n***\n*** Failed to start $SERVER\n***"
     cat $SERVER_LOG
     exit 1
 fi
 
-RET=0
-
-set +e
-python $TEST_PY -v -p $EXPECTED_RES ../images/mug.jpg >>$CLIENT_LOG 2>&1
+# Test health
+python $SIMPLE_HEALTH_CLIENT -v >> ${CLIENT_LOG}.health 2>&1
 if [ $? -ne 0 ]; then
+    cat ${CLIENT_LOG}.health
     RET=1
 fi
-set -e
+
+for i in \
+        $SIMPLE_INFER_CLIENT \
+        ; do
+    BASE=$(basename -- $i)
+    SUFFIX="${BASE%.*}"
+    python $i -v >> "${CLIENT_LOG}.${SUFFIX}" 2>&1
+    if [ $? -ne 0 ]; then
+        cat "${CLIENT_LOG}.${SUFFIX}"
+        RET=1
+    fi
+
+    if [ $(cat "${CLIENT_LOG}.${SUFFIX}" | grep "PASS" | wc -l) -ne 1 ]; then
+        cat "${CLIENT_LOG}.${SUFFIX}"
+        RET=1
+    fi
+done
 
 kill $SERVER_PID
 wait $SERVER_PID
 
+set -e
+
+
 if [ $RET -eq 0 ]; then
     echo -e "\n***\n*** Test Passed\n***"
 else
-    cat $CLIENT_LOG
     echo -e "\n***\n*** Test FAILED\n***"
 fi
 

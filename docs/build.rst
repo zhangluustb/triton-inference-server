@@ -30,7 +30,7 @@
 Building
 ========
 
-The TensorRT Inference Server, the client libraries and examples, and
+The Triton Inference Server, the client libraries and examples, and
 custom backends can each be built using either Docker or CMake. The
 procedure for each is different and is detailed in the corresponding
 sections below.
@@ -38,7 +38,7 @@ sections below.
 Building the Server
 -------------------
 
-The TensorRT Inference Server can be built in two ways:
+The Triton Inference Server can be built in two ways:
 
 * Build using Docker and the TensorFlow and PyTorch containers from
   `NVIDIA GPU Cloud (NGC) <https://ngc.nvidia.com>`_. Before building
@@ -54,7 +54,7 @@ The TensorRT Inference Server can be built in two ways:
 Building the Server with Docker
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To build a release version of the TensorRT Inference Server container,
+To build a release version of the Triton Inference Server container,
 change directory to the root of the repo and checkout the release
 version of the branch that you want to build (or the master branch if
 you want to build the under-development version)::
@@ -63,7 +63,7 @@ you want to build the under-development version)::
 
 Then use docker to build::
 
-  $ docker build --pull -t tensorrtserver .
+  $ docker build --pull -t tritonserver .
 
 Incremental Builds with Docker
 ..............................
@@ -71,15 +71,15 @@ Incremental Builds with Docker
 For typical development you will want to run the *build* container
 with your local repo’s source files mounted so that your local changes
 can be incrementally built. This is done by first building the
-*tensorrtserver_build* container::
+*tritonserver_build* container::
 
-  $ docker build --pull -t tensorrtserver_build --target trtserver_build .
+  $ docker build --pull -t tritonserver_build --target trtserver_build .
 
-By mounting /path/to/tensorrtserver/src into the container at
+By mounting /path/to/tritonserver/src into the container at
 /workspace/src, changes to your local repo will be reflected in the
 container::
 
-  $ nvidia-docker run -it --rm -v/path/to/tensorrtserver/src:/workspace/src tensorrtserver_build
+  $ nvidia-docker run -it --rm -v/path/to/tritonserver/src:/workspace/src tritonserver_build
 
 Within the container you can perform an incremental server build
 with::
@@ -101,7 +101,7 @@ You can reconfigure the build by running *cmake* as described in
 Building the Server with CMake
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To build a release version of the TensorRT Inference Server with
+To build a release version of the Triton Inference Server with
 CMake, change directory to the root of the repo and checkout the
 release version of the branch that you want to build (or the master
 branch if you want to build the under-development version)::
@@ -253,7 +253,7 @@ can be specified by separating them with a semicolon.
 Configure Inference Server
 ..........................
 
-Use cmake to configure the TensorRT Inference Server::
+Use cmake to configure the Triton Inference Server::
 
   $ mkdir builddir
   $ cd builddir
@@ -337,9 +337,10 @@ These additional options may be specified:
 * **TRTIS_MIN_COMPUTE_CAPABILITY**: By default, the inference server
   supports NVIDIA GPUs with CUDA compute capability 6.0 or higher. If
   all framework backends included in the inference server are built to
-  support a lower compute capability, then TRTIS can be built to support
-  that lower compute capability by setting -DTRTIS_MIN_COMPUTE_CAPABILITY
-  appropriately. The setting is ignored if -DTRTIS_ENABLE_GPU=OFF.
+  support a lower compute capability, then Triton Inference Server can
+  be built to support that lower compute capability by setting
+  -DTRTIS_MIN_COMPUTE_CAPABILITY appropriately. The setting is ignored
+  if -DTRTIS_ENABLE_GPU=OFF.
 
 * **TRTIS_EXTRA_LIB_PATHS**: Extra paths that are searched for
   framework libraries as described above. Multiple paths can be
@@ -364,7 +365,7 @@ Building A Custom Backend
 
 The source repository contains several example custom backends in the
 `src/custom directory
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/custom>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/custom>`_.
 These custom backends are built using CMake::
 
   $ mkdir builddir
@@ -400,11 +401,11 @@ model configuration and protobuf utility functions you will need. You
 can either build the custom backend SDK yourself using
 Dockerfile.custombackend::
 
-  docker build -t tensorrtserver_cbe -f Dockerfile.custombackend .
+  docker build -t tritonserver_cbe -f Dockerfile.custombackend .
 
 Or you can download a pre-build version of the SDK from the `GitHub
 release page
-<https://github.com/NVIDIA/tensorrt-inference-server/releases>`_
+<https://github.com/NVIDIA/triton-inference-server/releases>`_
 corresponding to the release you are interested in. The custom backend
 SDK is found in the "Assets" section of the release page in a tar file
 named after the version of the release and the OS, for example,
@@ -422,11 +423,11 @@ Using the Custom Instance Wrapper Class
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The custom backend SDK provides a `CustomInstance Class
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/custom/sdk/custom_instance.h>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/custom/sdk/custom_instance.h>`_.
 The CustomInstance class is a C++ wrapper class that abstracts away the
 backend C-API for ease of use. All of the example custom backends in
 `src/custom directory
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/custom>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/custom>`_
 derive from the CustomInstance class and can be referenced for usage.
 
 Building the Client Libraries and Examples
@@ -455,7 +456,7 @@ To build the docs install the required dependencies::
   $ pip3 install --upgrade setuptools
   $ pip3 install --upgrade sphinx sphinx-rtd-theme nbsphinx exhale
 
-To get the Python client library API docs the TensorRT Inference
+To get the Python client library API docs the Triton Inference
 Server Python package must be installed and a couple of files must be copied::
 
   $ pip install --upgrade tensorrtserver*.whl

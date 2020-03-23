@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -25,8 +25,8 @@
   # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
   # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-NVIDIA TensorRT Inference Server
-================================
+NVIDIA Triton Inference Server
+==============================
 
 .. ifconfig:: "dev" in release
 
@@ -34,7 +34,7 @@ NVIDIA TensorRT Inference Server
      You are currently viewing unstable developer preview
      of the documentation. To see the documentation for the latest
      stable release click `here
-     <https://docs.nvidia.com/deeplearning/sdk/tensorrt-inference-server-guide/docs/index.html>`_.
+     <https://docs.nvidia.com/deeplearning/sdk/triton-inference-server-guide/docs/index.html>`_.
 
 .. include:: ../README.rst
    :start-after: overview-begin-marker-do-not-remove
@@ -54,6 +54,7 @@ NVIDIA TensorRT Inference Server
    run
    client
    client_example
+   client_experimental
    models_and_schedulers
    model_repository
    model_configuration

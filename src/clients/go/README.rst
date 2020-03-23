@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -39,14 +39,14 @@ global instead.
 Usage::
 
   # Clone repo
-  git clone https://github.com/NVIDIA/tensorrt-inference-server.git
+  git clone https://github.com/NVIDIA/triton-inference-server.git
 
   # Setup "simple" model from example model_repository
-  cd tensorrt-inference-server/docs/examples
+  cd triton-inference-server/docs/examples
   ./fetch_models.sh
 
   # Launch (detached) TRTIS
-  docker run -d -p8000:8000 -p8001:8001 -p8002:8002 -it -v $(pwd)/model_repository:/models nvcr.io/nvidia/tensorrtserver:19.07-py3 trtserver --model-store=/models
+  docker run -d -p8000:8000 -p8001:8001 -p8002:8002 -it -v $(pwd)/model_repository:/models nvcr.io/nvidia/tritonserver:20.03-py3 trtserver --model-store=/models
 
   # Use client
   cd ../../src/clients/go

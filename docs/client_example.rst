@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -36,7 +36,7 @@ show how to use the :ref:`client libraries
 
 * C++ and Python versions of *image\_client*, an example application
   that uses the C++ or Python client library to execute image
-  classification models on the TensorRT Inference Server.
+  classification models on the Triton Inference Server.
 
 * C++ version of *perf\_client*, an application that issues a large
   number of concurrent requests to the inference server to measure
@@ -45,9 +45,9 @@ show how to use the :ref:`client libraries
   models.
 
 * A number of simple `C++
-  <https://github.com/NVIDIA/tensorrt-inference-server/tree/master/src/clients/c%2B%2B>`_
+  <https://github.com/NVIDIA/triton-inference-server/tree/master/src/clients/c%2B%2B>`_
   and `Python
-  <https://github.com/NVIDIA/tensorrt-inference-server/tree/master/src/clients/python>`_
+  <https://github.com/NVIDIA/triton-inference-server/tree/master/src/clients/python>`_
   samples that show various aspects of the inference server. The name
   of these examples begins with *simple_*.
 
@@ -75,7 +75,7 @@ Build Using Dockerfile
 To build the examples using Docker follow the description in
 :ref:`section-client-libraries-build-using-dockerfile`.
 
-After the build completes the tensorrtserver_client docker image will
+After the build completes the tritonserver_client docker image will
 contain the built client examples, and will also be configured with
 all the dependencies required to run those examples within the
 container. The easiest way to try the examples described in the
@@ -90,9 +90,9 @@ to use CUDA shared memory you need to use nvidia-docker instead of Docker
 to run the client image. (see :ref:`section-running-the-inference-server`
 for more information about running the inference server)::
 
-  $ docker run -it --rm --net=host tensorrtserver_client
+  $ docker run -it --rm --net=host tritonserver_client
 
-In the tensorrtserver_client image you can find the example
+In the tritonserver_client image you can find the example
 executables in /workspace/install/bin, and the
 Python examples in /workspace/install/python.
 
@@ -109,7 +109,7 @@ When the build completes the examples can be found in
 trtis-clients/install. To use the examples, you need to include the
 path to the client library in environment variable "LD_LIBRARY_PATH",
 by default it is
-/path/to/tensorrtserver/repo/build/trtis-clients/install/lib. In
+/path/to/tritonserver/repo/build/trtis-clients/install/lib. In
 addition to that, you also need to install the tensorrtserver Python
 package and other packages required by the examples::
 
@@ -176,7 +176,7 @@ to use CUDA shared memory you need to use nvidia-docker instead of Docker
 to run the client image. (see :ref:`section-running-the-inference-server`
 for more information about running the inference server)::
 
-  $ docker run -it --rm --net=host nvcr.io/nvidia/tensorrtserver:<xx.yy>-py3-clientsdk
+  $ docker run -it --rm --net=host nvcr.io/nvidia/tritonserver:<xx.yy>-py3-clientsdk
 
 In the image you can find the example executables in
 /workspace/install/bin, and the Python examples in
@@ -189,10 +189,10 @@ Image Classification Example Application
 
 The image classification example that uses the C++ client API is
 available at `src/clients/c++/examples/image\_client.cc
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/image_client.cc>`_. The
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/image_client.cc>`_. The
 Python version of the image classification client is available at
 `src/clients/python/api_v1/examples/image\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/image_client.py>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/image_client.py>`_.
 
 To use image\_client (or image\_client.py) you must first have a
 running inference server that is serving one or more image
@@ -209,7 +209,7 @@ requests to the server. You can specify a single image or a directory
 holding images. Here we send a request for the resnet50_netdef model
 from the :ref:`example model repository
 <section-example-model-repository>` for an image from the `qa/images
-<https://github.com/NVIDIA/tensorrt-inference-server/tree/master/qa/images>`_
+<https://github.com/NVIDIA/triton-inference-server/tree/master/qa/images>`_
 directory::
 
   $ image_client -m resnet50_netdef -s INCEPTION qa/images/mug.jpg
@@ -289,7 +289,7 @@ on all images in the directory::
 
 The grpc\_image\_client.py application at available at
 `src/clients/python/api_v1/examples/grpc\_image\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/grpc_image_client.py>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/grpc_image_client.py>`_
 behaves the same as the image\_client except that instead of using the
 inference server client library it uses the GRPC generated client
 library to communicate with the server.
@@ -306,10 +306,10 @@ to send the raw image binaries in the request and receive
 classification results without preprocessing the images on the
 client. The ensemble image classification example that uses the C++
 client API is available at `src/clients/c++/examples/ensemble\_image\_client.cc
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/examples/ensemble_image_client.cc>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/examples/ensemble_image_client.cc>`_.
 The Python version of the image classification client is available at
 `src/clients/python/api_v1/examples/ensemble\_image\_client.py
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/python/api_v1/examples/ensemble_image_client.py>`_.
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/python/api_v1/examples/ensemble_image_client.py>`_.
 
 To use ensemble\_image\_client (or ensemble\_image\_client.py) you must first
 have a running inference server that is serving the
@@ -324,7 +324,7 @@ requests to the server. You can specify a single image or a directory
 holding images. Here we send a request for the ensemble from the
 :ref:`example ensemble model repository <section-example-model-repository>` for
 an image from the `qa/images
-<https://github.com/NVIDIA/tensorrt-inference-server/tree/master/qa/images>`_
+<https://github.com/NVIDIA/triton-inference-server/tree/master/qa/images>`_
 directory::
 
   $ ensemble_image_client qa/images/mug.jpg
@@ -382,7 +382,7 @@ Performance Measurement Application
 -----------------------------------
 
 The perf\_client application located at `src/clients/c++/perf\_client
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/src/clients/c%2B%2B/perf_client>`_
+<https://github.com/NVIDIA/triton-inference-server/blob/master/src/clients/c%2B%2B/perf_client>`_
 uses the C++ client API to send concurrent requests to the server to
 measure latency and inferences-per-second under varying client
 loads. See the :ref:`section-perf-client` for a full description.

@@ -1,5 +1,5 @@
 ..
-  # Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+  # Copyright (c) 2019-2020, NVIDIA CORPORATION. All rights reserved.
   #
   # Redistribution and use in source and binary forms, with or without
   # modification, are permitted provided that the following conditions
@@ -30,7 +30,7 @@
 Optimization
 ============
 
-The TensorRT Inference Server has many features that you can use to
+The Triton Inference Server has many features that you can use to
 decrease latency and increase throughput for your model. This section
 discusses these features and demonstrates how you can use them to
 improve the performance of your model. As a prerequisite you should
@@ -48,7 +48,7 @@ options, we will use a Caffe2 ResNet50 model that you can obtain by
 following the :ref:`section-quickstart`. As a baseline we use
 perf\_client to determine the performance of the model using a `basic
 model configuration that does not enable any performance features
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/docs/examples/model_repository/resnet50_netdef/config.pbtxt>`_::
+<https://github.com/NVIDIA/triton-inference-server/blob/master/docs/examples/model_repository/resnet50_netdef/config.pbtxt>`_::
 
   $ perf_client -m resnet50_netdef --percentile=95 --concurrency-range 1:4
   ...
@@ -218,7 +218,7 @@ will use an ONNX DenseNet model that you can obtain by following the
 :ref:`section-quickstart`. As a baseline we use perf\_client to
 determine the performance of the model using a `basic model
 configuration that does not enable any performance features
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/docs/examples/model_repository/densenet_onnx/config.pbtxt>`_::
+<https://github.com/NVIDIA/triton-inference-server/blob/master/docs/examples/model_repository/densenet_onnx/config.pbtxt>`_::
 
   $ perf_client -m densenet_onnx --percentile=95 --concurrency-range 1:4
   ...
@@ -281,7 +281,7 @@ we will use a TensorFlow Inception model that you can obtain by
 following the :ref:`section-quickstart`. As a baseline we use
 perf\_client to determine the performance of the model using a `basic
 model configuration that does not enable any performance features
-<https://github.com/NVIDIA/tensorrt-inference-server/blob/master/docs/examples/model_repository/inception_graphdef/config.pbtxt>`_::
+<https://github.com/NVIDIA/triton-inference-server/blob/master/docs/examples/model_repository/inception_graphdef/config.pbtxt>`_::
 
   $ perf_client -m inception_graphdef --percentile=95 --concurrency-range 1:4
   ...
