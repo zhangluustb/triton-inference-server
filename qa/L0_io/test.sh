@@ -25,7 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
 fi
@@ -47,8 +47,8 @@ ENSEMBLEDIR=/data/inferenceserver/${REPO_VERSION}/qa_ensemble_model_repository/q
 export CUDA_VISIBLE_DEVICES=0,1
 
 # Must explicitly set LD_LIBRARY_PATH so that IO_TEST_UTIL can find
-# libtrtserver.so.
-LD_LIBRARY_PATH=/opt/tensorrtserver/lib:$LD_LIBRARY_PATH
+# libtritonserver.so.
+LD_LIBRARY_PATH=/opt/tritonserver/lib:$LD_LIBRARY_PATH
 
 rm -f $CLIENT_LOG.*
 

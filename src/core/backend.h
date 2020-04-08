@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -35,7 +35,7 @@
 
 namespace nvidia { namespace inferenceserver {
 
-class InferRequestProvider;
+class InferenceRequest;
 class InferResponseProvider;
 class MetricModelReporter;
 
@@ -86,7 +86,7 @@ class InferenceBackend {
   // callback will be called once the inference is completed
   void Run(
       const std::shared_ptr<ModelInferStats>& stats,
-      const std::shared_ptr<InferRequestProvider>& request_provider,
+      const std::shared_ptr<InferenceRequest>& request,
       const std::shared_ptr<InferResponseProvider>& response_provider,
       std::function<void(const Status&)> OnCompleteHandleInfer);
 
@@ -95,11 +95,32 @@ class InferenceBackend {
   uint32_t MaxPriorityLevel() const { return max_priority_level_; }
 
  protected:
+  struct WarmupData {
+    WarmupData(const std::string& sample_name, size_t batch_size)
+        : sample_name_(sample_name), batch_size_(batch_size)
+    {
+    }
+
+    std::string sample_name_;
+    size_t batch_size_;
+    std::shared_ptr<InferenceRequest> request_;
+
+    // Placeholder for input data
+    std::unique_ptr<AllocatedMemory> zero_data_;
+    std::unique_ptr<AllocatedMemory> random_data_;
+    std::vector<std::string> provided_data_;
+  };
+
   // Run model on the context associated with 'runner_idx' to
   // execute for one or more requests.
   virtual void Run(
       uint32_t runner_idx, std::vector<Scheduler::Payload>* payloads,
       std::function<void(Status)> OnCompleteQueuedPayloads);
+
+  // Warm up context associated with 'runner_idx' with provided 'sample'.
+  virtual void WarmUp(
+      uint32_t runner_idx, const WarmupData& sample,
+      std::function<void(Status)> OnCompleteWarmup);
 
   // Set the configuration of the model being served.
   Status SetModelConfig(const std::string& path, const ModelConfig& config);
@@ -121,23 +142,6 @@ class InferenceBackend {
   std::vector<std::unique_ptr<BackendContext>> contexts_;
 
  private:
-  struct WarmupData {
-    WarmupData(const std::string& sample_name, size_t batch_size)
-        : sample_name_(sample_name), batch_size_(batch_size)
-    {
-    }
-
-    std::string sample_name_;
-    size_t batch_size_;
-    std::shared_ptr<InferenceRequest> irequest_;
-    std::shared_ptr<InferRequestProvider::InputOverrideMap> input_override_;
-
-    // Placeholder for input data
-    std::unique_ptr<AllocatedMemory> zero_data_;
-    std::unique_ptr<AllocatedMemory> random_data_;
-    std::vector<std::string> provided_data_;
-  };
-
   // Generate warmup data
   Status GenerateWarmupData(std::vector<WarmupData>* samples);
 

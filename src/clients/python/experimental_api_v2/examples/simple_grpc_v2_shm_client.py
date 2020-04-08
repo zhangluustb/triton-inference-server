@@ -28,9 +28,11 @@
 import argparse
 import numpy as np
 import os
+import sys
 from builtins import range
 import tritongrpcclient.core as grpcclient
 import tritongrpcclient.shared_memory as shm
+import tritongrpcclient.utils as utils
 from ctypes import *
 
 FLAGS = None
@@ -56,8 +58,8 @@ if __name__ == '__main__':
         triton_client = grpcclient.InferenceServerClient(FLAGS.url)
     except Exception as e:
         print("channel creation failed: " + str(e))
-        sys.exit()
-    
+        sys.exit(1)
+
     # To make sure no shared memory regions are registered with the
     # server.
     triton_client.unregister_system_shared_memory()
@@ -79,53 +81,76 @@ if __name__ == '__main__':
     output_byte_size = input_byte_size
 
     # Create Output0 and Output1 in Shared Memory and store shared memory handles
-    shm_op0_handle = shm.create_shared_memory_region("output0_data", "/output0_simple", output_byte_size)
-    shm_op1_handle = shm.create_shared_memory_region("output1_data", "/output1_simple", output_byte_size)
+    shm_op0_handle = shm.create_shared_memory_region("output0_data",
+                                                     "/output0_simple",
+                                                     output_byte_size)
+    shm_op1_handle = shm.create_shared_memory_region("output1_data",
+                                                     "/output1_simple",
+                                                     output_byte_size)
 
     # Register Output0 and Output1 shared memory with Triton Server
-    triton_client.register_system_shared_memory("output0_data", "/output0_simple", output_byte_size)
-    triton_client.register_system_shared_memory("output1_data", "/output1_simple", output_byte_size)
+    triton_client.register_system_shared_memory("output0_data",
+                                                "/output0_simple",
+                                                output_byte_size)
+    triton_client.register_system_shared_memory("output1_data",
+                                                "/output1_simple",
+                                                output_byte_size)
 
     # Create Input0 and Input1 in Shared Memory and store shared memory handles
-    shm_ip0_handle = shm.create_shared_memory_region("input0_data", "/input0_simple", input_byte_size)
-    shm_ip1_handle = shm.create_shared_memory_region("input1_data", "/input1_simple", input_byte_size)
+    shm_ip0_handle = shm.create_shared_memory_region("input0_data",
+                                                     "/input0_simple",
+                                                     input_byte_size)
+    shm_ip1_handle = shm.create_shared_memory_region("input1_data",
+                                                     "/input1_simple",
+                                                     input_byte_size)
 
     # Put input data values into shared memory
     shm.set_shared_memory_region(shm_ip0_handle, [input0_data])
     shm.set_shared_memory_region(shm_ip1_handle, [input1_data])
 
     # Register Input0 and Input1 shared memory with Triton Server
-    triton_client.register_system_shared_memory("input0_data", "/input0_simple", input_byte_size)
-    triton_client.register_system_shared_memory("input1_data", "/input1_simple", input_byte_size)
+    triton_client.register_system_shared_memory("input0_data", "/input0_simple",
+                                                input_byte_size)
+    triton_client.register_system_shared_memory("input1_data", "/input1_simple",
+                                                input_byte_size)
 
     # Set the parameters to use data from shared memory
     inputs = []
-    inputs.append(grpcclient.InferInput('INPUT0', [1,16], "INT32"))
-    inputs[-1].set_parameter("shared_memory_region", "input0_data")
-    inputs[-1].set_parameter("shared_memory_byte_size", input_byte_size)
+    inputs.append(grpcclient.InferInput('INPUT0', [1, 16], "INT32"))
+    inputs[-1].set_shared_memory("input0_data", input_byte_size)
 
-    inputs.append(grpcclient.InferInput('INPUT1', [1,16], "INT32"))
-    inputs[-1].set_parameter("shared_memory_region", "input1_data")
-    inputs[-1].set_parameter("shared_memory_byte_size", input_byte_size)
+    inputs.append(grpcclient.InferInput('INPUT1', [1, 16], "INT32"))
+    inputs[-1].set_shared_memory("input1_data", input_byte_size)
 
     outputs = []
     outputs.append(grpcclient.InferOutput('OUTPUT0'))
-    # outputs[-1].set_parameter("shared_memory_region", "output0_data")
-    # outputs[-1].set_parameter("shared_memory_byte_size", output_byte_size)
+    outputs[-1].set_shared_memory("output0_data", output_byte_size)
 
     outputs.append(grpcclient.InferOutput('OUTPUT1'))
-    # outputs[-1].set_parameter("shared_memory_region", "output1_data")
-    # outputs[-1].set_parameter("shared_memory_byte_size", output_byte_size)
+    outputs[-1].set_shared_memory("output1_data", output_byte_size)
 
-    results = triton_client.infer(inputs, outputs, model_name)
+    results = triton_client.infer(model_name=model_name,
+                                  inputs=inputs,
+                                  outputs=outputs)
 
-    # TODO : Currently, this example doesn't use shared memory for output.
-    # This is done to effectively validate the results.
-    # tritongrpcclient.shared_memory module will be enhanced to read
-    # data from a specified shared memory handle, data_type and shape;
-    # and later return the numpy array.
-    output0_data = results.as_numpy('OUTPUT0')
-    output1_data = results.as_numpy('OUTPUT1')
+    # Read results from the shared memory.
+    output0 = results.get_output("OUTPUT0")
+    if output0 is not None:
+        output0_data = shm.get_contents_as_numpy(
+            shm_op0_handle, utils.triton_to_np_dtype(output0.datatype),
+            output0.shape)
+    else:
+        print("OUTPUT0 is missing in the response.")
+        sys.exit(1)
+
+    output1 = results.get_output("OUTPUT1")
+    if output1 is not None:
+        output1_data = shm.get_contents_as_numpy(
+            shm_op1_handle, utils.triton_to_np_dtype(output1.datatype),
+            output1.shape)
+    else:
+        print("OUTPUT1 is missing in the response.")
+        sys.exit(1)
 
     for i in range(16):
         print(str(input0_data[i]) + " + " + str(input1_data[i]) + " = " +

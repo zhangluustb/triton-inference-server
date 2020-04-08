@@ -33,7 +33,7 @@ RET=0
 apt-get update && \
     apt-get install -y --no-install-recommends python3-pip zip doxygen && \
     pip3 install --upgrade setuptools && \
-    pip3 install --upgrade sphinx sphinx-rtd-theme nbsphinx exhale && \
+    pip3 install --upgrade sphinx==2.4.4 sphinx-rtd-theme nbsphinx exhale && \
     pip3 install --upgrade ../pkgs/tensorrtserver*.whl && \
     pip3 install --upgrade ../pkgs/triton*.whl
 
@@ -48,7 +48,7 @@ set +e
 export VISITS_COUNTING_SCRIPT=//assets.adobedtm.com/b92787824f2e0e9b68dc2e993f9bd995339fe417/satelliteLib-7ba51e58dc61bcb0e9311aadd02a0108ab24cc6c.js
 
 (cd docs && rm -f trtis_docs.zip && \
-        make BUILDDIR=/opt/tensorrtserver/qa/L0_docs/build clean html) > $TEST_LOG 2>&1
+        make BUILDDIR=/opt/tritonserver/qa/L0_docs/build clean html) > $TEST_LOG 2>&1
 if [ $? -ne 0 ]; then
     RET=1
 fi

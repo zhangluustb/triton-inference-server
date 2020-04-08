@@ -56,10 +56,13 @@ if __name__ == '__main__':
     model_name = 'simple'
 
     # Health
-    if not triton_client.is_server_live():
+    if not triton_client.is_server_live(query_params={
+            'test_1': 1,
+            'test_2': 2
+    }):
         print("FAILED : is_server_live")
         sys.exit(1)
-    
+
     if not triton_client.is_server_ready():
         print("FAILED : is_server_ready")
         sys.exit(1)
@@ -75,7 +78,11 @@ if __name__ == '__main__':
         sys.exit(1)
     print(metadata)
 
-    metadata = triton_client.get_model_metadata(model_name)
+    metadata = triton_client.get_model_metadata(model_name,
+                                                query_params={
+                                                    'test_1': 1,
+                                                    'test_2': 2
+                                                })
     if not (metadata['name'] == model_name):
         print("FAILED : get_model_metadata")
         sys.exit(1)
@@ -85,8 +92,9 @@ if __name__ == '__main__':
     try:
         metadata = triton_client.get_model_metadata("wrong_model_name")
     except InferenceServerException as ex:
-        if "no status available for unknown model" in ex.message():
-            sys.exit(0)
-
-    print("FAILED : get_model_metadata wrong_model_name")
-    sys.exit(1)
+        if "Request for unknown model" not in ex.message():
+            print("FAILED : get_model_metadata wrong_model_name")
+            sys.exit(1)
+    else:
+        print("FAILED : get_model_metadata wrong_model_name")
+        sys.exit(1)

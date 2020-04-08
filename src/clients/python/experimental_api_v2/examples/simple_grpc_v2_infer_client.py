@@ -27,6 +27,7 @@
 
 import argparse
 import numpy as np
+import sys
 
 import tritongrpcclient.core as grpcclient
 
@@ -57,8 +58,8 @@ if __name__ == '__main__':
     # Infer
     inputs = []
     outputs = []
-    inputs.append(grpcclient.InferInput('INPUT0'))
-    inputs.append(grpcclient.InferInput('INPUT1'))
+    inputs.append(grpcclient.InferInput('INPUT0', [1, 16], "INT32"))
+    inputs.append(grpcclient.InferInput('INPUT1', [1, 16], "INT32"))
 
     # Create the data for the two input tensors. Initialize the first
     # to unique integers and the second to all ones.
@@ -72,9 +73,18 @@ if __name__ == '__main__':
 
     outputs.append(grpcclient.InferOutput('OUTPUT0'))
     outputs.append(grpcclient.InferOutput('OUTPUT1'))
-    results = triton_client.infer(inputs, outputs, model_name)
+    results = triton_client.infer(model_name=model_name,
+                                  inputs=inputs,
+                                  outputs=outputs,
+                                  headers={'test': '1'})
 
-    # Get the output arrays from the
+    statistics = triton_client.get_inference_statistics(model_name=model_name)
+    print(statistics)
+    if len(statistics.inference) != 1:
+        print("FAILED: Inference Statistics")
+        sys.exit(1)
+
+    # Get the output arrays from the results
     output0_data = results.as_numpy('OUTPUT0')
     output1_data = results.as_numpy('OUTPUT1')
 

@@ -25,7 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
 fi
@@ -42,7 +42,7 @@ PERF_CLIENT=../clients/perf_client
 
 DATADIR="/data/inferenceserver/${REPO_VERSION}/tf_model_store"
 
-SERVER=/opt/tensorrtserver/bin/trtserver
+SERVER=/opt/tritonserver/bin/tritonserver
 source ../common/util.sh
 
 rm -f *.log*
@@ -90,7 +90,7 @@ if [ "$SERVER_PID" == "0" ]; then
     exit 1
 fi
 
-sleep 5 
+sleep 20
 
 set +e
 for MODEL_NAME in resnet_v1_50_graphdef resnet_v1_50_savedmodel; do
@@ -120,7 +120,7 @@ if [ "$SERVER_PID" == "0" ]; then
     exit 1
 fi
 
-sleep 5 
+sleep 20 
 
 set +e
 for MODEL_NAME in resnet_v1_50_graphdef resnet_v1_50_savedmodel; do

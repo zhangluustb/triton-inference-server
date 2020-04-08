@@ -30,11 +30,14 @@
 #include "src/core/model_config.pb.h"
 #include "src/core/server_status.pb.h"
 #include "src/core/status.h"
+#include "src/core/tracing.h"
 
 namespace nvidia { namespace inferenceserver {
 
 class MetricModelReporter;
 class ServerStatusManager;
+class OpaqueTraceManager;
+class Trace;
 
 // Updates a server stat with duration measured by a C++ scope.
 class ServerStatTimerScoped {
@@ -102,7 +105,9 @@ class ModelInferStats {
       : status_manager_(status_manager), model_name_(model_name),
         requested_model_version_(-1), batch_size_(0), gpu_device_(-1),
         failed_(false), execution_count_(0), extra_queue_duration_(0),
-        extra_compute_duration_(0), trace_manager_(nullptr), trace_(nullptr),
+        extra_compute_duration_(0), extra_compute_input_duration_(0),
+        extra_compute_infer_duration_(0), extra_compute_output_duration_(0),
+        trace_manager_(nullptr), trace_(nullptr),
         timestamps_((size_t)TimestampKind::COUNT__)
   {
     memset(&timestamps_[0], 0, sizeof(struct timespec) * timestamps_.size());
@@ -137,22 +142,22 @@ class ModelInferStats {
   void SetModelExecutionCount(uint32_t count) { execution_count_ = count; }
 
   // Set the trace manager associated with the inference.
-  void SetTraceManager(TRTSERVER_TraceManager* tm) { trace_manager_ = tm; }
+  void SetTraceManager(OpaqueTraceManager* tm) { trace_manager_ = tm; }
 
   // Get the trace manager associated with the inference.
-  TRTSERVER_TraceManager* GetTraceManager() const { return trace_manager_; }
+  OpaqueTraceManager* GetTraceManager() const { return trace_manager_; }
 
   // Create a trace object associated to the inference.
   // Optional 'parent' can be provided if the trace object has a parent.
   // Model name, model version, and trace manager should be set before calling
   // this function. And each ModelInferStats instance should not call this
   // function more than once.
-  void NewTrace(TRTSERVER_Trace* parent = nullptr);
+  void NewTrace(Trace* parent = nullptr);
 
   // Get the trace object associated to the inference.
   // Return nullptr if the inference will not be traced or if NewTrace()
   // has not been called.
-  TRTSERVER_Trace* GetTrace() const { return trace_; }
+  Trace* GetTrace() const { return trace_; }
 
   // Include queue time from another stat into this stat's queue time.
   void IncrementQueueDuration(const ModelInferStats& other);
@@ -204,13 +209,18 @@ class ModelInferStats {
   uint64_t extra_queue_duration_;
   uint64_t extra_compute_duration_;
 
+  // Duration needed for V2 version of API
+  uint64_t extra_compute_input_duration_;
+  uint64_t extra_compute_infer_duration_;
+  uint64_t extra_compute_output_duration_;
+
   // The trace manager associated with these stats. This object is not owned by
   // this ModelInferStats object and so is not destroyed by this object.
-  TRTSERVER_TraceManager* trace_manager_;
+  OpaqueTraceManager* trace_manager_;
 
   // The trace associated with these stats. This object is not owned by
   // this ModelInferStats object and so is not destroyed by this object.
-  TRTSERVER_Trace* trace_;
+  Trace* trace_;
 #endif  // TRTIS_ENABLE_STATS
 
   std::vector<struct timespec> timestamps_;
@@ -221,6 +231,12 @@ class ServerStatusManager {
  public:
   // Create a manager for server status
   explicit ServerStatusManager(const std::string& server_version);
+
+  // Set the protocol version.
+  void SetProtocolVersion(const uint32_t v) { protocol_version_ = v; }
+  // Get the protocol version.
+  uint32_t GetProtocolVersion() { return protocol_version_; }
+
 
   // Initialize status for a model.
   Status InitForModel(
@@ -255,15 +271,24 @@ class ServerStatusManager {
       size_t batch_size, uint64_t last_timestamp_ms,
       uint64_t request_duration_ns);
 
-  // Add durations to Infer stats for a successful inference request.
+  // [V1] Add durations to Infer stats for a successful inference request.
   void UpdateSuccessInferStats(
       const std::string& model_name, const int64_t model_version,
       size_t batch_size, uint32_t execution_cnt, uint64_t last_timestamp_ms,
       uint64_t request_duration_ns, uint64_t queue_duration_ns,
       uint64_t compute_duration_ns);
 
+  // [V2] Add durations to Infer stats for a successful inference request.
+  void UpdateSuccessInferStats(
+      const std::string& model_name, const int64_t model_version,
+      uint32_t execution_cnt, uint64_t last_timestamp_ms,
+      uint64_t request_duration_ns, uint64_t queue_duration_ns,
+      uint64_t compute_input_duration_ns, uint64_t compute_infer_duration_ns,
+      uint64_t compute_output_duration_ns);
+
  private:
   mutable std::mutex mu_;
   ServerStatus server_status_;
+  uint32_t protocol_version_;
 };
 }}  // namespace nvidia::inferenceserver

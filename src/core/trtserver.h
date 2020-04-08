@@ -516,6 +516,7 @@ TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_InferenceRequestOptionsAddOutput(
     TRTSERVER_InferenceRequestOptions* request_options,
     const char* output_name);
 
+// TEMPORARY: will be removed as part of V1->V2 transition
 /// Request the classification values of the specified output to be returned
 /// for requests associated with the request options.
 /// \param request_options The request options object.
@@ -1001,7 +1002,7 @@ TRTSERVER_EXPORT TRTSERVER_Error* TRTSERVER_ServerModelStatus(
     TRTSERVER_Server* server, const char* model_name,
     TRTSERVER_Protobuf** status);
 
-/// Get the index for all unique models in the model repository  as a
+/// Get the index for all unique models in the model repository as a
 /// TRTSERVER_Protobuf object. The caller takes ownership of the object
 /// and must call TRTSERVER_ProtobufDelete to release the object.
 /// \param server The inference server object.

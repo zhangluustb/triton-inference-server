@@ -138,56 +138,6 @@ SetTRTSERVER_InferenceRequestOptions(
   return nullptr;  // Success
 }
 
-#ifdef TRTIS_ENABLE_GRPC_V2
-
-TRTSERVER_Error*
-SetInferenceRequestOptions(
-    TRTSERVER_InferenceRequestOptions* request_options,
-    const ModelInferRequest& request)
-{
-  RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetIdStr(
-      request_options, request.id().c_str()));
-  // FIXMEV2 parameters
-  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetFlags(
-  //    request_options, request_header.flags()));
-  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetPriority(
-  //   request_options, request_header.priority()));
-  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetTimeoutMicroseconds(
-  //   request_options, request_header.timeout_microseconds()));
-  // RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsSetCorrelationId(
-  //    request_options, request.sequence_id()));
-
-  // FIXMEV2 raw contents size?? Do we need it?
-  for (const auto& input : request.inputs()) {
-    RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddInput(
-        request_options, input.name().c_str(), input.shape().data(),
-        input.shape_size(), input.contents().raw_contents().size()));
-  }
-
-  for (const auto& output : request.outputs()) {
-    // FIXMEV2 parameters
-    if (output.parameters().find("classification") !=
-        output.parameters().end()) {
-      const auto& infer_param = output.parameters().at("classification");
-      if (infer_param.parameter_choice_case() !=
-          InferParameter::ParameterChoiceCase::kInt64Param) {
-        return TRTSERVER_ErrorNew(
-            TRTSERVER_ERROR_INVALID_ARG,
-            "invalid value type for 'classification' parameter, expected "
-            "int64_param.");
-      }
-      RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddClassificationOutput(
-          request_options, output.name().c_str(), infer_param.int64_param()));
-    } else {
-      RETURN_IF_ERR(TRTSERVER_InferenceRequestOptionsAddOutput(
-          request_options, output.name().c_str()));
-    }
-  }
-  return nullptr;  // Success
-}
-
-#endif  // TRTIS_ENABLE_GRPC_V2
-
 std::string
 MemoryTypeString(TRTSERVER_Memory_Type memory_type)
 {
@@ -201,91 +151,6 @@ MemoryTypeString(TRTSERVER_Memory_Type memory_type)
     default:
       return "unknown memory type";
   }
-}
-
-const char*
-DataTypeToProtocolString(const DataType dtype)
-{
-  switch (dtype) {
-    case TYPE_BOOL:
-      return "BOOL";
-    case TYPE_UINT8:
-      return "UINT8";
-    case TYPE_UINT16:
-      return "UINT16";
-    case TYPE_UINT32:
-      return "UINT32";
-    case TYPE_UINT64:
-      return "UINT64";
-    case TYPE_INT8:
-      return "INT8";
-    case TYPE_INT16:
-      return "INT16";
-    case TYPE_INT32:
-      return "INT32";
-    case TYPE_INT64:
-      return "INT64";
-    case TYPE_FP16:
-      return "FP16";
-    case TYPE_FP32:
-      return "FP32";
-    case TYPE_FP64:
-      return "FP64";
-    case TYPE_STRING:
-      return "BYTES";
-    default:
-      break;
-  }
-
-  return "";
-}
-
-DataType
-ProtocolStringToDataType(const char* dtype, size_t len)
-{
-  if (len < 4 || len > 6) {
-    return TYPE_INVALID;
-  }
-
-  if ((*dtype == 'I') && (len != 6)) {
-    if ((dtype[1] == 'N') && (dtype[2] == 'T')) {
-      if ((dtype[3] == '8') && (len == 4)) {
-        return TYPE_INT8;
-      } else if ((dtype[3] == '1') && (dtype[4] == '6')) {
-        return TYPE_INT16;
-      } else if ((dtype[3] == '3') && (dtype[4] == '2')) {
-        return TYPE_INT32;
-      } else if ((dtype[3] == '6') && (dtype[4] == '4')) {
-        return TYPE_INT64;
-      }
-    }
-  } else if ((*dtype == 'U') && (len != 4)) {
-    if ((dtype[1] == 'I') && (dtype[2] == 'N') && (dtype[3] == 'T')) {
-      if ((dtype[4] == '8') && (len == 5)) {
-        return TYPE_UINT8;
-      } else if ((dtype[4] == '1') && (dtype[5] == '6')) {
-        return TYPE_UINT16;
-      } else if ((dtype[4] == '3') && (dtype[5] == '2')) {
-        return TYPE_UINT32;
-      } else if ((dtype[4] == '6') && (dtype[5] == '4')) {
-        return TYPE_UINT64;
-      }
-    }
-  } else if ((*dtype == 'F') && (dtype[1] == 'P') && (len == 4)) {
-    if ((dtype[2] == '1') && (dtype[3] == '6')) {
-      return TYPE_FP16;
-    } else if ((dtype[2] == '3') && (dtype[3] == '2')) {
-      return TYPE_FP32;
-    } else if ((dtype[2] == '6') && (dtype[3] == '4')) {
-      return TYPE_FP64;
-    }
-  } else if (*dtype == 'B') {
-    if (strcmp(dtype + 1, "YTES")) {
-      return TYPE_STRING;
-    }
-  }
-
-  return TYPE_INVALID;
 }
 
 size_t
@@ -316,7 +181,7 @@ GetDataTypeByteSize(const std::string& protocol_dtype)
   }
 }
 
-TRTSERVER_Error*
+TRITONSERVER_Error*
 GetModelVersionFromString(
     const std::string& version_string, int64_t* version_int)
 {
@@ -327,8 +192,8 @@ GetModelVersionFromString(
       *version_int = std::stol(version_string);
     }
     catch (std::exception& e) {
-      return TRTSERVER_ErrorNew(
-          TRTSERVER_ERROR_INVALID_ARG,
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INVALID_ARG,
           std::string(
               "failed to get model version from specified version string '" +
               version_string + "' (details: " + e.what() +
@@ -336,8 +201,8 @@ GetModelVersionFromString(
               .c_str());
     }
     if (*version_int < 0) {
-      return TRTSERVER_ErrorNew(
-          TRTSERVER_ERROR_INVALID_ARG,
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INVALID_ARG,
           std::string(
               "invalid model version specified '" +
               std::to_string(*version_int) +
@@ -347,6 +212,95 @@ GetModelVersionFromString(
   }
 
   return nullptr;  // Success
+}
+
+//
+// TRITON
+//
+
+namespace {
+
+TRTSERVER_Error_Code
+TritonErrorCodeToTrt(TRITONSERVER_Error_Code code)
+{
+  switch (code) {
+    case TRITONSERVER_ERROR_INTERNAL:
+      return TRTSERVER_ERROR_INTERNAL;
+    case TRITONSERVER_ERROR_NOT_FOUND:
+      return TRTSERVER_ERROR_NOT_FOUND;
+    case TRITONSERVER_ERROR_INVALID_ARG:
+      return TRTSERVER_ERROR_INVALID_ARG;
+    case TRITONSERVER_ERROR_UNAVAILABLE:
+      return TRTSERVER_ERROR_UNAVAILABLE;
+    case TRITONSERVER_ERROR_UNSUPPORTED:
+      return TRTSERVER_ERROR_UNSUPPORTED;
+    case TRITONSERVER_ERROR_ALREADY_EXISTS:
+      return TRTSERVER_ERROR_ALREADY_EXISTS;
+    case TRITONSERVER_ERROR_UNKNOWN:
+    default:
+      return TRTSERVER_ERROR_UNKNOWN;
+  }
+}
+
+}  // namespace
+
+
+TRTSERVER_Error*
+TritonErrorToTrt(TRITONSERVER_Error* err)
+{
+  if (err != nullptr) {
+    auto triton_err = TRTSERVER_ErrorNew(
+        TritonErrorCodeToTrt(TRITONSERVER_ErrorCode(err)),
+        TRITONSERVER_ErrorMessage(err));
+    TRITONSERVER_ErrorDelete(err);
+    return triton_err;
+  }
+  return nullptr;
+}
+
+TRTSERVER_Memory_Type
+TritonMemTypeToTrt(TRITONSERVER_Memory_Type mem_type)
+{
+  switch (mem_type) {
+    case TRITONSERVER_MEMORY_CPU:
+      return TRTSERVER_MEMORY_CPU;
+      break;
+    case TRITONSERVER_MEMORY_CPU_PINNED:
+      return TRTSERVER_MEMORY_CPU_PINNED;
+    default:
+      return TRTSERVER_MEMORY_GPU;
+      break;
+  }
+}
+
+TRITONSERVER_Memory_Type
+TrtMemTypeToTriton(TRTSERVER_Memory_Type mem_type)
+{
+  switch (mem_type) {
+    case TRTSERVER_MEMORY_CPU:
+      return TRITONSERVER_MEMORY_CPU;
+      break;
+    case TRTSERVER_MEMORY_CPU_PINNED:
+      return TRITONSERVER_MEMORY_CPU_PINNED;
+    default:
+      return TRITONSERVER_MEMORY_GPU;
+      break;
+  }
+}
+
+std::string
+MemoryTypeString(TRITONSERVER_Memory_Type memory_type)
+{
+  switch (memory_type) {
+    case TRITONSERVER_MEMORY_CPU:
+      return "CPU memory";
+    case TRITONSERVER_MEMORY_CPU_PINNED:
+      return "Pinned CPU memory";
+    case TRITONSERVER_MEMORY_GPU:
+      return "GPU memory";
+    default:
+      return "unknown memory type";
+  }
 }
 
 }}  // namespace nvidia::inferenceserver

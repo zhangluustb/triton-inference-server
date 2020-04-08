@@ -31,6 +31,8 @@ if(${TRTIS_ENABLE_HTTP_V2})
     PROGRAMS
       simple_http_v2_health_metadata.py
       simple_http_v2_infer_client.py
+      simple_http_v2_async_infer_client.py
+      simple_http_v2_model_control.py
     DESTINATION python
   )
 endif() # TRTIS_ENABLE_HTTP_V2
@@ -43,14 +45,23 @@ if(${TRTIS_ENABLE_GRPC_V2})
       grpc_v2_explicit_int_content_client.py
       grpc_v2_explicit_int8_content_client.py
       grpc_v2_image_client.py
-      simple_grpc_v2_class_client.py
       simple_grpc_v2_cudashm_client.py
       simple_grpc_v2_health_metadata.py
       simple_grpc_v2_async_infer_client.py
       simple_grpc_v2_infer_client.py
+      simple_grpc_v2_sequence_stream_infer_client.py
+      simple_grpc_v2_sequence_sync_infer_client.py
       simple_grpc_v2_string_infer_client.py
       simple_grpc_v2_shm_client.py
       simple_grpc_v2_model_control.py
     DESTINATION python
   )
 endif() # TRTIS_ENABLE_GRPC_V2
+
+if(${TRTIS_ENABLE_HTTP_V2} OR ${TRTIS_ENABLE_GRPC_V2})
+  install(
+    PROGRAMS
+      v2_image_client.py
+    DESTINATION python
+  )
+endif() # TRTIS_ENABLE_HTTP_V2 || TRTIS_ENABLE_GRPC_V2

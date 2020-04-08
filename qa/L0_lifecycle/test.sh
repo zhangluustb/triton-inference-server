@@ -25,7 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
 fi
@@ -42,7 +42,7 @@ LC_TEST=lifecycle_test.py
 
 DATADIR=/data/inferenceserver/${REPO_VERSION}
 
-SERVER=/opt/tensorrtserver/bin/trtserver
+SERVER=/opt/tritonserver/bin/tritonserver
 source ../common/util.sh
 
 RET=0
@@ -789,6 +789,15 @@ set +e
 unavailable_count=`curl -s localhost:8000/api/status/graphdef_float32_float32_float32 | grep "MODEL_UNAVAILABLE" | wc -l`
 set -e
 if [ "$unavailable_count" != "0" ]; then
+    echo -e "\n***\n*** Test Failed\n***"
+    RET=1
+fi
+
+# Infer request with no 'NV-InferRequest' header should return 400 error and not crash server.
+set +e
+code=`curl -s -w %{http_code} -X POST localhost:8000/api/infer/graphdef_float32_float32_float32`
+set -e
+if [[ "$code" != *"400" ]]; then
     echo -e "\n***\n*** Test Failed\n***"
     RET=1
 fi

@@ -25,7 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
 fi
@@ -37,15 +37,15 @@ fi
 
 export CUDA_VISIBLE_DEVICES=0
 
-set +e
-
 RET=0
 
 SIMPLE_HEALTH_CLIENT=../clients/simple_grpc_v2_health_metadata.py
 SIMPLE_INFER_CLIENT=../clients/simple_grpc_v2_infer_client.py
 SIMPLE_ASYNC_INFER_CLIENT=../clients/simple_grpc_v2_async_infer_client.py
 SIMPLE_STRING_INFER_CLIENT=../clients/simple_grpc_v2_string_infer_client.py
-SIMPLE_CLASS_CLIENT=../clients/simple_grpc_v2_class_client.py
+SIMPLE_STREAM_INFER_CLIENT=../clients/simple_grpc_v2_sequence_stream_infer_client.py
+SIMPLE_SEQUENCE_INFER_CLIENT=../clients/simple_grpc_v2_sequence_sync_infer_client.py
+V2_IMAGE_CLIENT=../clients/v2_image_client.py
 SIMPLE_SHM_CLIENT=../clients/simple_grpc_v2_shm_client.py
 SIMPLE_CUDASHM_CLIENT=../clients/simple_grpc_v2_cudashm_client.py
 SIMPLE_MODEL_CONTROL=../clients/simple_grpc_v2_model_control.py
@@ -69,29 +69,22 @@ cp -r /data/inferenceserver/${REPO_VERSION}/tf_model_store/resnet_v1_50_graphdef
 
 CLIENT_LOG=`pwd`/client.log
 DATADIR=`pwd`/models
-SERVER=/opt/tensorrtserver/bin/trtserver
+SERVER=/opt/tritonserver/bin/tritonserver
 SERVER_ARGS="--model-repository=$DATADIR --api-version 2"
 source ../common/util.sh
 
-# FIXMEPV2
-# Cannot use run_server since it repeatedly curls the (old) HTTP health endpoint to know
-# when the server is ready. This endpoint would not exist in future.
-run_server_nowait
-sleep 10
+run_server_v2
 if [ "$SERVER_PID" == "0" ]; then
     echo -e "\n***\n*** Failed to start $SERVER\n***"
     cat $SERVER_LOG
     exit 1
 fi
 
+set +e
+
 # Test health
 python $SIMPLE_HEALTH_CLIENT -v >> ${CLIENT_LOG}.health 2>&1
 if [ $? -ne 0 ]; then
-    cat ${CLIENT_LOG}.health
-    RET=1
-fi
-
-if [ $(cat ${CLIENT_LOG}.health | grep "PASS" | wc -l) -ne 7 ]; then
     cat ${CLIENT_LOG}.health
     RET=1
 fi
@@ -101,7 +94,9 @@ for i in \
         $SIMPLE_INFER_CLIENT \
         $SIMPLE_ASYNC_INFER_CLIENT \
         $SIMPLE_STRING_INFER_CLIENT \
-        $SIMPLE_CLASS_CLIENT \
+        $V2_IMAGE_CLIENT \
+        $SIMPLE_STREAM_INFER_CLIENT \
+        $SIMPLE_SEQUENCE_INFER_CLIENT \
         $SIMPLE_SHM_CLIENT \
         $SIMPLE_CUDASHM_CLIENT \
         $EXPLICIT_BYTE_CONTENT_CLIENT \
@@ -112,8 +107,20 @@ for i in \
         ; do
     BASE=$(basename -- $i)
     SUFFIX="${BASE%.*}"
-    if [[ $SUFFIX == "simple_grpc_v2_class_client" || $SUFFIX == "grpc_v2_image_client" ]]; then
+    if [ $SUFFIX == "grpc_v2_image_client" ]; then
         python $i -m inception_graphdef -s INCEPTION -c 1 -b 1 $IMAGE >> "${CLIENT_LOG}.${SUFFIX}" 2>&1
+        if [ `grep -c VULTURE ${CLIENT_LOG}.${SUFFIX}` != "1" ]; then
+            echo -e "\n***\n*** Failed. Expected 1 VULTURE results\n***"
+            cat $CLIENT_LOG.${SUFFIX}
+            RET=1
+        fi
+    elif [ $SUFFIX == "v2_image_client" ]; then
+        python $i -m inception_graphdef -s INCEPTION -c 1 -b 1 -i grpc -u localhost:8001 $IMAGE >> "${CLIENT_LOG}.${SUFFIX}" 2>&1
+        if [ `grep -c VULTURE ${CLIENT_LOG}.${SUFFIX}` != "1" ]; then
+            echo -e "\n***\n*** Failed. Expected 1 VULTURE results\n***"
+            cat $CLIENT_LOG.${SUFFIX}
+            RET=1
+        fi
     else
         python $i -v >> "${CLIENT_LOG}.${SUFFIX}" 2>&1
     fi
@@ -129,21 +136,19 @@ for i in \
     fi
 done
 
+set -e
 kill $SERVER_PID
 wait $SERVER_PID
 
 SERVER_ARGS="--model-repository=$DATADIR --model-control-mode=explicit --api-version 2"
-# FIXMEPV2
-# Cannot use run_server since it repeatedly curls the (old) HTTP health endpoint to know
-# when the server is ready. This endpoint would not exist in future.
-run_server_nowait
-sleep 10
+run_server_v2
 if [ "$SERVER_PID" == "0" ]; then
     echo -e "\n***\n*** Failed to start $SERVER\n***"
     cat $SERVER_LOG
     exit 1
 fi
 
+set +e
 # Test Model Control API
 python $SIMPLE_MODEL_CONTROL -v >> ${CLIENT_LOG}.model_control 2>&1
 if [ $? -ne 0 ]; then
@@ -155,12 +160,10 @@ if [ $(cat ${CLIENT_LOG}.model_control | grep "PASS" | wc -l) -ne 1 ]; then
     cat ${CLIENT_LOG}.model_control
     RET=1
 fi
+set -e
 
 kill $SERVER_PID
 wait $SERVER_PID
-
-set -e
-
 
 if [ $RET -eq 0 ]; then
     echo -e "\n***\n*** Test Passed\n***"

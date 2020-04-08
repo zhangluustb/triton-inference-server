@@ -189,6 +189,7 @@ set(
   status.cc
   tracing.cc
   trtserver.cc
+  tritonserver.cc
 )
 
 set(
@@ -196,6 +197,7 @@ set(
   autofill.h
   backend.h
   backend_context.h
+  cond_var.h
   constants.h
   cuda_utils.h
   dynamic_batch_scheduler.h
@@ -223,6 +225,7 @@ set(
   tracing.h
   trtserver.h
   trtserver2.h
+  tritonserver.h
 )
 
 if(${TRTIS_ENABLE_GPU})

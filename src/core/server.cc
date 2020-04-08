@@ -88,10 +88,18 @@ InferenceServer::InferenceServer()
   id_ = "inference:0";
   protocol_version_ = 1;
   extensions_.push_back("classification");
+  extensions_.push_back("sequence");
   extensions_.push_back("model_repository");
+  extensions_.push_back("schedule_policy");
   extensions_.push_back("model_configuration");
   extensions_.push_back("system_shared_memory");
   extensions_.push_back("cuda_shared_memory");
+#ifdef TRTIS_ENABLE_HTTP_V2
+  extensions_.push_back("binary_tensor_data");
+#endif
+#ifdef TRTIS_ENABLE_STATS
+  extensions_.push_back("statistics");
+#endif
 
   strict_model_config_ = true;
   strict_readiness_ = true;
@@ -124,7 +132,7 @@ InferenceServer::Init()
   if (model_repository_paths_.empty()) {
     ready_state_ = ServerReadyState::SERVER_FAILED_TO_INITIALIZE;
     return Status(
-        RequestStatusCode::INVALID_ARG, "--model-repository must be specified");
+        Status::Code::INVALID_ARG, "--model-repository must be specified");
   }
 
   PinnedMemoryManager::Options options(pinned_memory_pool_size_);
@@ -239,8 +247,7 @@ InferenceServer::Stop()
   }
 
   return Status(
-      RequestStatusCode::INTERNAL,
-      "Exit timeout expired. Exiting immediately.");
+      Status::Code::INTERNAL, "Exit timeout expired. Exiting immediately.");
 }
 
 Status
@@ -263,7 +270,7 @@ InferenceServer::IsLive(bool* live)
   *live = false;
 
   if (ready_state_ == ServerReadyState::SERVER_EXITING) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server exiting");
+    return Status(Status::Code::UNAVAILABLE, "Server exiting");
   }
 
   ScopedAtomicIncrement inflight(inflight_request_counter_);
@@ -283,7 +290,7 @@ InferenceServer::IsReady(bool* ready)
   *ready = false;
 
   if (ready_state_ == ServerReadyState::SERVER_EXITING) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server exiting");
+    return Status(Status::Code::UNAVAILABLE, "Server exiting");
   }
 
   ScopedAtomicIncrement inflight(inflight_request_counter_);
@@ -321,16 +328,62 @@ InferenceServer::IsReady(bool* ready)
   return Status::Success;
 }
 
+Status
+InferenceServer::ModelIsReady(
+    const std::string& model_name, const int64_t model_version, bool* ready)
+{
+  *ready = false;
+
+  if (ready_state_ == ServerReadyState::SERVER_EXITING) {
+    return Status(Status::Code::UNAVAILABLE, "Server exiting");
+  }
+
+  ScopedAtomicIncrement inflight(inflight_request_counter_);
+
+  std::shared_ptr<InferenceBackend> backend;
+  if (GetInferenceBackend(model_name, model_version, &backend).IsOk()) {
+    ModelReadyState state;
+    if (model_repository_manager_
+            ->GetModelState(model_name, backend->Version(), &state)
+            .IsOk()) {
+      *ready = (state == ModelReadyState::MODEL_READY);
+    }
+  }
+
+  return Status::Success;
+}
+
+Status
+InferenceServer::ModelReadyVersions(
+    const std::string& model_name, std::vector<int64_t>* versions)
+{
+  if (ready_state_ == ServerReadyState::SERVER_EXITING) {
+    return Status(Status::Code::UNAVAILABLE, "Server exiting");
+  }
+
+  ScopedAtomicIncrement inflight(inflight_request_counter_);
+
+  const ModelRepositoryManager::VersionStateMap version_states =
+      model_repository_manager_->GetVersionStates(model_name);
+  for (const auto& pr : version_states) {
+    if (pr.second == ModelReadyState::MODEL_READY) {
+      versions->push_back(pr.first);
+    }
+  }
+
+  return Status::Success;
+}
+
 void
 InferenceServer::InferAsync(
     const std::shared_ptr<InferenceBackend>& backend,
-    const std::shared_ptr<InferRequestProvider>& request_provider,
+    const std::shared_ptr<InferenceRequest>& request,
     const std::shared_ptr<InferResponseProvider>& response_provider,
     const std::shared_ptr<ModelInferStats>& infer_stats,
     std::function<void(const Status&)> OnCompleteInfer)
 {
   if (ready_state_ != ServerReadyState::SERVER_READY) {
-    OnCompleteInfer(Status(RequestStatusCode::UNAVAILABLE, "Server not ready"));
+    OnCompleteInfer(Status(Status::Code::UNAVAILABLE, "Server not ready"));
     return;
   }
 
@@ -350,8 +403,7 @@ InferenceServer::InferAsync(
     }
   };
 
-  backend->Run(
-      infer_stats, request_provider, response_provider, OnCompleteHandleInfer);
+  backend->Run(infer_stats, request, response_provider, OnCompleteHandleInfer);
 }
 
 Status
@@ -359,7 +411,7 @@ InferenceServer::GetStatus(
     ServerStatus* server_status, const std::string& model_name)
 {
   if (ready_state_ == ServerReadyState::SERVER_EXITING) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server exiting");
+    return Status(Status::Code::UNAVAILABLE, "Server exiting");
   }
 
   ScopedAtomicIncrement inflight(inflight_request_counter_);
@@ -380,7 +432,7 @@ Status
 InferenceServer::GetModelRepositoryIndex(ModelRepositoryIndex* repository_index)
 {
   if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
+    return Status(Status::Code::UNAVAILABLE, "Server not ready");
   }
 
   ScopedAtomicIncrement inflight(inflight_request_counter_);
@@ -392,7 +444,7 @@ Status
 InferenceServer::LoadModel(const std::string& model_name)
 {
   if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
+    return Status(Status::Code::UNAVAILABLE, "Server not ready");
   }
 
   ScopedAtomicIncrement inflight(inflight_request_counter_);
@@ -405,7 +457,7 @@ Status
 InferenceServer::UnloadModel(const std::string& model_name)
 {
   if (ready_state_ != ServerReadyState::SERVER_READY) {
-    return Status(RequestStatusCode::UNAVAILABLE, "Server not ready");
+    return Status(Status::Code::UNAVAILABLE, "Server not ready");
   }
 
   ScopedAtomicIncrement inflight(inflight_request_counter_);

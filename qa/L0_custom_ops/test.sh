@@ -25,7 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
 fi
@@ -42,7 +42,7 @@ ZERO_OUT_TEST=zero_out_test.py
 CUDA_OP_TEST=cuda_op_test.py
 MOD_OP_TEST=mod_op_test.py
 
-SERVER=/opt/tensorrtserver/bin/trtserver
+SERVER=/opt/tritonserver/bin/tritonserver
 SERVER_LOG="./inference_server.log"
 source ../common/util.sh
 
@@ -52,7 +52,7 @@ RET=0
 
 # Must explicitly set LD_LIBRARY_PATH so that the custom operations
 # can find libtensorflow_framework.so and pytorch library.
-LD_LIBRARY_PATH=/opt/tensorrtserver/lib/tensorflow:/opt/tensorrtserver/lib/pytorch:$LD_LIBRARY_PATH
+LD_LIBRARY_PATH=/opt/tritonserver/lib/tensorflow:/opt/tritonserver/lib/pytorch:$LD_LIBRARY_PATH
 
 # Tensorflow
 SERVER_ARGS="--model-repository=/data/inferenceserver/${REPO_VERSION}/qa_custom_ops/tf_custom_ops"

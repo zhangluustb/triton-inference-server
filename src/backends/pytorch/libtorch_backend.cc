@@ -203,9 +203,9 @@ LibTorchBackend::CreateExecutionContext(
     cudaError_t cuerr = cudaGetDeviceProperties(&cuprops, gpu_device);
     if (cuerr != cudaSuccess) {
       return Status(
-          RequestStatusCode::INTERNAL,
-          "unable to get CUDA device properties for " + Name() + ": " +
-              cudaGetErrorString(cuerr));
+          Status::Code::INTERNAL, "unable to get CUDA device properties for " +
+                                      Name() + ": " +
+                                      cudaGetErrorString(cuerr));
     }
 
     cc = std::to_string(cuprops.major) + "." + std::to_string(cuprops.minor);
@@ -214,15 +214,15 @@ LibTorchBackend::CreateExecutionContext(
                             ? Config().default_model_filename()
                             : cc_itr->second;
 #else
-    return Status(RequestStatusCode::INTERNAL, "GPU instances not supported");
+    return Status(Status::Code::INTERNAL, "GPU instances not supported");
 #endif  // TRTIS_ENABLE_GPU
   }
 
   const auto& lp_itr = models.find(cc_model_filename);
   if (lp_itr == models.end()) {
     return Status(
-        RequestStatusCode::INTERNAL, "unable to find LibTorch model '" +
-                                         cc_model_filename + "' for " + Name());
+        Status::Code::INTERNAL, "unable to find LibTorch model '" +
+                                    cc_model_filename + "' for " + Name());
   }
 
   if (gpu_device == Context::NO_GPU_DEVICE) {
@@ -265,8 +265,8 @@ LibTorchBackend::CreateExecutionContext(
   }
   catch (const std::exception& ex) {
     return Status(
-        RequestStatusCode::INTERNAL, "load failed for libtorch model -> '" +
-                                         Config().name() + "': " + ex.what());
+        Status::Code::INTERNAL, "load failed for libtorch model -> '" +
+                                    Config().name() + "': " + ex.what());
   }
 
   RETURN_IF_ERROR(context->ValidateInputs(Config().input()));
@@ -285,7 +285,7 @@ LibTorchBackend::Context::ValidateInputs(
     const auto pr = ConvertDataTypeToTorchType(io.data_type());
     if (!pr.first) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unsupported datatype " + DataType_Name(io.data_type()) +
               " for input '" + io.name() + "' for model '" + name_ + "'");
     } else {
@@ -301,7 +301,7 @@ LibTorchBackend::Context::ValidateInputs(
       }
       catch (std::exception& ex) {
         return Status(
-            RequestStatusCode::INTERNAL,
+            Status::Code::INTERNAL,
             "Input '" + name +
                 "' does not follow naming convention i.e. <name>__<index>.");
       }
@@ -324,7 +324,7 @@ LibTorchBackend::Context::ValidateOutputs(
     const auto pr = ConvertDataTypeToTorchType(io.data_type());
     if (!pr.first) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unsupported datatype " + DataType_Name(io.data_type()) +
               " for output '" + io.name() + "' for model '" + name_ + "'");
     } else {
@@ -340,7 +340,7 @@ LibTorchBackend::Context::ValidateOutputs(
       }
       catch (std::exception& ex) {
         return Status(
-            RequestStatusCode::INTERNAL,
+            Status::Code::INTERNAL,
             "Output '" + name +
                 "' does not follow naming convention i.e. <name>__<index>.");
       }
@@ -370,7 +370,7 @@ LibTorchBackend::Context::SetInputTensor(
 
   if (input_tensor.nbytes() != total_byte_size) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "unexpected size " + std::to_string(total_byte_size) +
             " for inference input '" + meta_data.name_ + "', expecting " +
             std::to_string(input_tensor.nbytes()));
@@ -404,7 +404,7 @@ LibTorchBackend::Context::ReadFixedSizedOutputTensor(
 
   if (byte_size != total_byte_size) {
     return Status(
-        RequestStatusCode::INVALID_ARG,
+        Status::Code::INVALID_ARG,
         "unexpected size for output '" + name + "', byte-size " +
             std::to_string(byte_size) + " does not equal " +
             std::to_string(total_batch_size) + " * " +
@@ -433,7 +433,7 @@ LibTorchBackend::Context::GetOutputTensor(
     DataType rec_dtype = ConvertTorchTypeToDataType(output_flat.scalar_type());
     if (dtype != rec_dtype) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unexpected datatype " + DataType_Name(rec_dtype) +
               " for inference output '" + name + "', expecting " +
               DataType_Name(dtype));
@@ -449,7 +449,7 @@ LibTorchBackend::Context::GetOutputTensor(
     }
   }
   catch (std::exception& ex) {
-    return Status(RequestStatusCode::INTERNAL, "failed to get LibTorch output");
+    return Status(Status::Code::INTERNAL, "failed to get LibTorch output");
   }
 
   return Status::Success;
@@ -463,8 +463,9 @@ LibTorchBackend::Context::SetInputMetaData(
     InputMetaData* meta_data, bool* cuda_copy)
 {
   meta_data->name_ = name;
-  // Get the shape of the input. The provider has already checked that
-  // the request shape is valid so don't need to do it here.
+  // Get the shape of the input. The request normalizer has already
+  // checked that the request shape is valid so don't need to do it
+  // here.
   meta_data->shape_.clear();
 
   // If model supports batching then prepend the batch dimension
@@ -482,9 +483,9 @@ LibTorchBackend::Context::SetInputMetaData(
   const auto pr = ConvertDataTypeToTorchType(datatype);
   if (!pr.first) {
     return Status(
-        RequestStatusCode::INTERNAL, "Failed to convert DataType '" +
-                                         DataType_Name(datatype) +
-                                         "' to Torch datatype");
+        Status::Code::INTERNAL, "Failed to convert DataType '" +
+                                    DataType_Name(datatype) +
+                                    "' to Torch datatype");
   }
   meta_data->torch_type_ = pr.second;
 
@@ -522,7 +523,7 @@ LibTorchBackend::Context::SetFixedSizedInputBuffer(
   // Visit the payloads in order and copy the input tensors to 'buffer'.
   std::vector<size_t> expected_byte_sizes;
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     expected_byte_sizes.push_back(irequest->BatchSize() * batch1_byte_size);
   }
 
@@ -538,7 +539,7 @@ LibTorchBackend::Context::Run(
   LOG_VERBOSE(1) << "Running " << name_ << " with " << payloads->size()
                  << " request payloads";
 
-  std::shared_ptr<InferRequestProvider> input_request_provider;
+  const InferenceRequest* repr_input_request = nullptr;
 
   // For each request in 'payloads' collect the total batch size for
   // this inference execution. The batch-size, number of inputs, and
@@ -548,16 +549,16 @@ LibTorchBackend::Context::Run(
   for (auto& payload : *payloads) {
     if (!payload.status_.IsOk()) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unexpected payload with non-OK status given to runner for '" +
               name_ + "'");
     }
 
-    total_batch_size += payload.request_provider_->Request()->BatchSize();
+    total_batch_size += payload.request_->BatchSize();
 
     // All payloads must have equally-sized input tensors so use any
     // payload as the representative for the input tensors.
-    input_request_provider = payload.request_provider_;
+    repr_input_request = payload.request_.get();
   }
 
   // If there are no valid payloads then no need to run the
@@ -571,21 +572,14 @@ LibTorchBackend::Context::Run(
   // (i.e. max_batch_size_ == 0).
   if ((total_batch_size != 1) && (total_batch_size > (size_t)max_batch_size_)) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "dynamic batch size " + std::to_string(total_batch_size) + " for '" +
             name_ + "', max allowed is " + std::to_string(max_batch_size_));
   }
 
-  // Additional inputs added to the provider...
-  const InferRequestProvider::InputOverrideMapVec& input_override_maps =
-      input_request_provider->GetInputOverrides();
+  size_t input_count = repr_input_request->ImmutableInputs().size();
 
-  size_t input_count = input_request_provider->Request()->Inputs().size();
-  for (const auto& ovr_map : input_override_maps) {
-    input_count += ovr_map->size();
-  }
-
-  // Hold reference to each buffer of input data to that it stays
+  // Hold reference to each buffer of input data so that it stays
   // until the inference has completed.
   std::vector<InputMetaData> input_meta_data(input_count);
 
@@ -594,28 +588,25 @@ LibTorchBackend::Context::Run(
   std::vector<torch::Tensor> outputs_;
   std::vector<InputInfo> inputs;
 
-  // Inputs from the request...
+  // Collect input metadata. FIXME override inputs from controls
+  // should be known from the model configuration at load time and so
+  // they should be processed then to initialze
+  // input_index_map_. Since they are not we do it here for every
+  // request which is unnecessary perf overhead.
   bool cuda_copy = false;
-  for (const auto& pr : input_request_provider->Request()->Inputs()) {
-    const auto& input = pr.second;
-    const std::string& name = input.Name();
-    int ip_index = input_index_map_[name];
-    const ModelInput* input_config;
-    RETURN_IF_ERROR(base->GetInput(name, &input_config));
+  for (const auto& pr : repr_input_request->ImmutableInputs()) {
+    const InferenceRequest::Input* input = pr.second;
+    const std::string& name = input->Name();
+    int ip_index;
 
-    RETURN_IF_ERROR(SetInputMetaData(
-        name, input_config->data_type(), input.Shape(), total_batch_size,
-        payloads, &inputs, &(input_meta_data[ip_index]), &cuda_copy));
-  }
+    const auto& itr = input_index_map_.find(name);
+    if (itr != input_index_map_.end()) {
+      ip_index = itr->second;
+    } else {
+      static const std::string deliminator = "__";
 
-  std::string deliminator = "__";
-  int ip_index;
+      LOG_VERBOSE(1) << "Processing override input: " << name;
 
-  for (const auto& ovr_map : input_override_maps) {
-    for (const auto& pr : *ovr_map) {
-      const std::string& name = pr.first;
-      LOG_VERBOSE(1) << "Processing extra input: " << name;
-      const InferRequestProvider::InputOverride& override = pr.second;
       try {
         int start_pos = name.find(deliminator);
         if (start_pos == -1) {
@@ -627,16 +618,19 @@ LibTorchBackend::Context::Run(
       }
       catch (std::exception& ex) {
         return Status(
-            RequestStatusCode::INTERNAL,
+            Status::Code::INTERNAL,
             "Input '" + name +
                 "' does not follow naming convention i.e. <name>__<index>.");
       }
+
       input_index_map_[name] = ip_index;
-      RETURN_IF_ERROR(SetInputMetaData(
-          name, override.datatype_, override.dims_, total_batch_size, payloads,
-          &inputs, &(input_meta_data[ip_index]), &cuda_copy));
     }
+
+    RETURN_IF_ERROR(SetInputMetaData(
+        name, input->DType(), input->Shape(), total_batch_size, payloads,
+        &inputs, &(input_meta_data[ip_index]), &cuda_copy));
   }
+
 #ifdef TRTIS_ENABLE_GPU
   if (cuda_copy) {
     cudaStreamSynchronize(stream_);
@@ -702,7 +696,7 @@ LibTorchBackend::Context::Run(
     int max_index = outputs_.size() - 1;
     if ((op_index < 0) || (op_index > max_index)) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "The output " + output.name() +
               " in the model configuration refers to an output index which "
               "doesn't exist. This model has " +
@@ -713,7 +707,7 @@ LibTorchBackend::Context::Run(
   // Prepare set of Outputs requested for
   std::set<std::string> required_outputs;
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     for (const auto& pr : irequest->RequestedOutputs()) {
       required_outputs.insert(pr.first);
     }
@@ -802,8 +796,7 @@ LibTorchBackend::Context::Execute(
     }
     catch (std::exception& exx) {
       LOG_VERBOSE(1) << ex.what();
-      return Status(
-          RequestStatusCode::INTERNAL, "failed to run model '" + name_);
+      return Status(Status::Code::INTERNAL, "failed to run model '" + name_);
     }
   }
 

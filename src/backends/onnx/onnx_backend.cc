@@ -174,9 +174,9 @@ OnnxBackend::CreateExecutionContext(
     cudaError_t cuerr = cudaGetDeviceProperties(&cuprops, gpu_device);
     if (cuerr != cudaSuccess) {
       return Status(
-          RequestStatusCode::INTERNAL,
-          "unable to get CUDA device properties for " + Name() + ": " +
-              cudaGetErrorString(cuerr));
+          Status::Code::INTERNAL, "unable to get CUDA device properties for " +
+                                      Name() + ": " +
+                                      cudaGetErrorString(cuerr));
     }
 
     cc = std::to_string(cuprops.major) + "." + std::to_string(cuprops.minor);
@@ -185,14 +185,14 @@ OnnxBackend::CreateExecutionContext(
                             ? Config().default_model_filename()
                             : cc_itr->second;
 #else
-    return Status(RequestStatusCode::INTERNAL, "GPU instances not supported");
+    return Status(Status::Code::INTERNAL, "GPU instances not supported");
 #endif  // TRTIS_ENABLE_GPU
   }
 
   const auto& op_itr = models.find(cc_model_filename);
   if (op_itr == models.end()) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "unable to find model '" + cc_model_filename + "' for " + Name());
   }
 
@@ -247,9 +247,9 @@ OnnxBackend::CreateExecutionContext(
 #endif  // TRTIS_ENABLE_ONNXRUNTIME_TENSORRT
         {
           return Status(
-              RequestStatusCode::INVALID_ARG,
-              "unknown Execution Accelerator '" + execution_accelerator.name() +
-                  "' is requested");
+              Status::Code::INVALID_ARG, "unknown Execution Accelerator '" +
+                                             execution_accelerator.name() +
+                                             "' is requested");
         }
       }
     }
@@ -258,7 +258,7 @@ OnnxBackend::CreateExecutionContext(
     LOG_VERBOSE(1) << "CUDA Execution Accelerator is set for " << instance_name
                    << " on device " << gpu_device;
 #else
-    return Status(RequestStatusCode::INTERNAL, "GPU instances not supported");
+    return Status(Status::Code::INTERNAL, "GPU instances not supported");
 #endif  // TRTIS_ENABLE_GPU
   }
 
@@ -277,14 +277,14 @@ OnnxBackend::CreateExecutionContext(
                        << instance_name << " on device CPU";
 #else
         return Status(
-            RequestStatusCode::INVALID_ARG,
+            Status::Code::INVALID_ARG,
             "OpenVINO Execution Accelerator is not enabled");
 #endif  // TRTIS_ENABLE_ONNXRUNTIME_OPENVINO
       } else {
         return Status(
-            RequestStatusCode::INVALID_ARG, "unknown Execution Accelerator '" +
-                                                execution_accelerator.name() +
-                                                "' is requested");
+            Status::Code::INVALID_ARG, "unknown Execution Accelerator '" +
+                                           execution_accelerator.name() +
+                                           "' is requested");
       }
     }
   }
@@ -364,7 +364,7 @@ OnnxBackend::Context::ValidateBooleanSequenceControl(
     const auto& iit = input_tensor_infos.find(tensor_name);
     if (iit == input_tensor_infos.end()) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "configuration specified sequence control '" + tensor_name +
               "', but model does not provide that input");
     }
@@ -378,7 +378,7 @@ OnnxBackend::Context::ValidateBooleanSequenceControl(
 
     if ((debatched_dims.size() != 1) || (debatched_dims[0] != 1)) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unable to load model '" + model_name + "', sequence control '" +
               tensor_name + "' in model has dims " +
               DimsListToString(debatched_dims) + " but dims [1] is expected");
@@ -386,7 +386,7 @@ OnnxBackend::Context::ValidateBooleanSequenceControl(
 
     if (ConvertToOnnxDataType(tensor_datatype) != iit->second.type_) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unable to load model '" + model_name + "', sequence control '" +
               tensor_name + "', the model expects data-type " +
               OnnxDataTypeName(iit->second.type_) +
@@ -416,7 +416,7 @@ OnnxBackend::Context::ValidateTypedSequenceControl(
     const auto& iit = input_tensor_infos.find(tensor_name);
     if (iit == input_tensor_infos.end()) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "configuration specified sequence control '" + tensor_name +
               "', but model does not provide that input");
     }
@@ -430,7 +430,7 @@ OnnxBackend::Context::ValidateTypedSequenceControl(
 
     if ((debatched_dims.size() != 1) || (debatched_dims[0] != 1)) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unable to load model '" + model_name + "', sequence control '" +
               tensor_name + "' in model has dims " +
               DimsListToString(debatched_dims) + " but dims [1] is expected");
@@ -438,7 +438,7 @@ OnnxBackend::Context::ValidateTypedSequenceControl(
 
     if (ConvertToOnnxDataType(tensor_datatype) != iit->second.type_) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unable to load model '" + model_name + "', sequence control '" +
               tensor_name + "', the model expects data-type " +
               OnnxDataTypeName(iit->second.type_) +
@@ -464,7 +464,7 @@ OnnxBackend::Context::ValidateInputs(
 
   if (input_tensor_infos.size() != expected_input_cnt) {
     return Status(
-        RequestStatusCode::INVALID_ARG,
+        Status::Code::INVALID_ARG,
         "unable to load model '" + model_name + "', configuration expects " +
             std::to_string(expected_input_cnt) + " inputs, model provides " +
             std::to_string(input_tensor_infos.size()));
@@ -479,12 +479,12 @@ OnnxBackend::Context::ValidateInputs(
     auto onnx_data_type = ConvertToOnnxDataType(io.data_type());
     if (onnx_data_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unsupported datatype " + DataType_Name(io.data_type()) +
               " for input '" + io.name() + "' for model '" + model_name + "'");
     } else if (onnx_data_type != iit->second.type_) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unable to load model '" + model_name + ", unexpected datatype " +
               DataType_Name(ConvertFromOnnxDataType(iit->second.type_)) +
               " for input '" + io.name() + "', expecting " +
@@ -522,12 +522,12 @@ OnnxBackend::Context::ValidateOutputs(
     auto onnx_data_type = ConvertToOnnxDataType(io.data_type());
     if (onnx_data_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unsupported datatype " + DataType_Name(io.data_type()) +
               " for output '" + io.name() + "' for model '" + model_name + "'");
     } else if (onnx_data_type != iit->second.type_) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unable to load model '" + model_name + ", unexpected datatype " +
               DataType_Name(ConvertFromOnnxDataType(iit->second.type_)) +
               " for output '" + io.name() + "', expecting " +
@@ -552,7 +552,7 @@ OnnxBackend::Context::Run(
   LOG_VERBOSE(1) << "Running " << name_ << " with " << payloads->size()
                  << " request payloads";
 
-  std::shared_ptr<InferRequestProvider> input_request_provider;
+  const InferenceRequest* repr_input_request = nullptr;
 
   // For each request in 'payloads' collect the total batch size for
   // this inference execution. The batch-size, number of inputs, and
@@ -562,16 +562,16 @@ OnnxBackend::Context::Run(
   for (auto& payload : *payloads) {
     if (!payload.status_.IsOk()) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unexpected payload with non-OK status given to runner for '" +
               name_ + "'");
     }
 
-    total_batch_size += payload.request_provider_->Request()->BatchSize();
+    total_batch_size += payload.request_->BatchSize();
 
     // All payloads must have equally-sized input tensors so use any
     // payload as the representative for the input tensors.
-    input_request_provider = payload.request_provider_;
+    repr_input_request = payload.request_.get();
   }
 
   // If there are no valid payloads then no need to run the
@@ -585,7 +585,7 @@ OnnxBackend::Context::Run(
   // (i.e. max_batch_size_ == 0).
   if ((total_batch_size != 1) && (total_batch_size > (size_t)max_batch_size_)) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "dynamic batch size " + std::to_string(total_batch_size) + " for '" +
             name_ + "', max allowed is " + std::to_string(max_batch_size_));
   }
@@ -605,33 +605,16 @@ OnnxBackend::Context::Run(
   std::vector<const char*> input_names;
   bool cuda_copy = false;
 
-  for (const auto& pr : input_request_provider->Request()->Inputs()) {
-    const auto& input = pr.second;
-    const std::string& name = input.Name();
-
-    const ModelInput* input_config;
-    RETURN_IF_ERROR(base->GetInput(name, &input_config));
+  for (const auto& pr : repr_input_request->ImmutableInputs()) {
+    const InferenceRequest::Input* input = pr.second;
+    const std::string& name = input->Name();
 
     // Create a tensor for each input sized correctly for the total
     // payload batch size. Concatenate input values from each payload
     // into the corresponding tensor.
     RETURN_IF_ERROR(SetInputTensor(
-        name, input_config->data_type(), input.Shape(), total_batch_size,
-        payloads, &input_buffers, &inputs, &input_names, &cuda_copy));
-  }
-
-  // Additional inputs added to the provider...
-  const InferRequestProvider::InputOverrideMapVec& input_override_maps =
-      input_request_provider->GetInputOverrides();
-  for (const auto& ovr_map : input_override_maps) {
-    for (const auto& pr : *ovr_map) {
-      const std::string& name = pr.first;
-      const InferRequestProvider::InputOverride& override = pr.second;
-
-      RETURN_IF_ERROR(SetInputTensor(
-          name, override.datatype_, override.dims_, total_batch_size, payloads,
-          &input_buffers, &inputs, &input_names, &cuda_copy));
-    }
+        name, input->DType(), input->Shape(), total_batch_size, payloads,
+        &input_buffers, &inputs, &input_names, &cuda_copy));
   }
 
   // Request to retrieve all output specified in model config
@@ -733,20 +716,17 @@ OnnxBackend::Context::SetInputTensor(
   std::vector<size_t> expected_byte_sizes;
   std::vector<size_t> expected_element_cnts;
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
 
     expected_element_cnts.push_back(irequest->BatchSize() * batch1_element_cnt);
 
     if (data_type == TYPE_STRING) {
-      // For String data byte, obtain expected byte size from 'batch_byte_size'
-      // The provider has already checked that batch_byte_size is set
-      for (const auto& pr : irequest->Inputs()) {
-        const auto& in = pr.second;
-        if (in.Name() == name) {
-          expected_byte_sizes.push_back(in.BatchByteSize());
-          break;
-        }
-      }
+      // For String data byte, obtain expected byte size from
+      // 'batch_byte_size' The request normalizer has already checked
+      // that batch_byte_size is set
+      const InferenceRequest::Input* in;
+      RETURN_IF_ERROR(irequest->ImmutableInput(name, &in));
+      expected_byte_sizes.push_back(in->BatchByteSize());
     } else {
       // Otherwise calculate expected byte size from 'expected_element_cnts',
       // so that the byte size for override input (not provided in request
@@ -829,7 +809,7 @@ OnnxBackend::Context::SetStringInputBuffer(
       while (remaining_bytes >= sizeof(uint32_t)) {
         if (element_cnt >= expected_element_cnt) {
           payload.status_ = Status(
-              RequestStatusCode::INVALID_ARG,
+              Status::Code::INVALID_ARG,
               "unexpected number of string elements " +
                   std::to_string(element_cnt + 1) + " for inference input '" +
                   name + "', expecting " +
@@ -845,7 +825,7 @@ OnnxBackend::Context::SetStringInputBuffer(
         data_content = data_content + sizeof(uint32_t);
         if (len > remaining_bytes) {
           payload.status_ = Status(
-              RequestStatusCode::INVALID_ARG,
+              Status::Code::INVALID_ARG,
               "incomplete string data for inference input '" + name +
                   "', expecting string of length " + std::to_string(len) +
                   " but only " + std::to_string(remaining_bytes) +
@@ -896,7 +876,7 @@ OnnxBackend::Context::ReadOutputTensors(
     OrtValue* output_tensor = output_tensors_[idx];
     if (output_tensor == nullptr) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "output tensor '" + name + "' does not found");
     }
 
@@ -949,7 +929,7 @@ OnnxBackend::Context::ReadOutputTensors(
       const size_t batch1_byte_size = expected_byte_size / total_batch_size;
       if (actual_byte_size != expected_byte_size) {
         return Status(
-            RequestStatusCode::INTERNAL,
+            Status::Code::INTERNAL,
             "unexpected size for output '" + name + "', byte-size " +
                 std::to_string(actual_byte_size) + " does not equal " +
                 std::to_string(total_batch_size) + " * " +
@@ -1014,7 +994,7 @@ OnnxBackend::Context::SetStringOutputBuffer(
   size_t element_idx = 0;
   bool cuda_copy = false;
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     const size_t expected_element_cnt =
         irequest->BatchSize() * batch1_element_cnt;
 

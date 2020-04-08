@@ -41,284 +41,88 @@
 
 namespace nvidia { namespace inferenceserver {
 
-//
-// InferRequestProvider
-//
-Status
-InferRequestProvider::Create(
-    const std::shared_ptr<InferenceRequest>& irequest,
-    std::shared_ptr<InferRequestProvider>* provider)
-{
-  provider->reset(new InferRequestProvider(irequest));
-
-  for (const auto& pr : irequest->Inputs()) {
-    if ((pr.second.BatchByteSize() != 0) &&
-        pr.second.BatchByteSize() != pr.second.Data()->TotalByteSize()) {
-      return Status(
-          RequestStatusCode::INVALID_ARG,
-          "unexpected size " +
-              std::to_string(pr.second.Data()->TotalByteSize()) +
-              " for input '" + pr.first + "', expecting " +
-              std::to_string(pr.second.BatchByteSize()) + " for model '" +
-              irequest->ModelName() + "'");
-    }
-  }
-
-  return Status::Success;
-}
-
-const InferRequestProvider::InputOverrideMapVec&
-InferRequestProvider::GetInputOverrides() const
-{
-  return overrides_maps_;
-}
-
-bool
-InferRequestProvider::HasInputOverride(const std::string& name)
-{
-  for (const auto& override_map : overrides_maps_) {
-    if (override_map->find(name) != override_map->end()) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-bool
-InferRequestProvider::GetInputOverrideShape(
-    const std::string& name, std::vector<int64_t>* shape)
-{
-  shape->clear();
-  for (const auto& override_map : overrides_maps_) {
-    auto it = override_map->find(name);
-    if (it != override_map->end()) {
-      *shape = it->second.dims_;
-      return true;
-    }
-  }
-
-  return false;
-}
-
-Status
-InferRequestProvider::AddInputOverrides(
-    const std::shared_ptr<InputOverrideMap>& overrides)
-{
-  if ((overrides != nullptr) && !overrides->empty()) {
-    overrides_maps_.emplace_back(overrides);
-  }
-
-  return Status::Success;
-}
-
-void
-InferRequestProvider::SetInputOverrideConsumed(
-    const std::string& name, const bool consumed)
-{
-  if (consumed) {
-    overrides_consumed_.insert(name);
-  } else {
-    overrides_consumed_.erase(name);
-  }
-}
-
-bool
-InferRequestProvider::GetInputOverrideContent(
-    const std::string& name, const void** content, size_t* content_byte_size)
-{
-  for (const auto& override_map : overrides_maps_) {
-    const auto& pr = override_map->find(name);
-    if (pr != override_map->end()) {
-      if ((*content_byte_size == 0) ||
-          (overrides_consumed_.find(name) != overrides_consumed_.end())) {
-        *content = nullptr;
-        *content_byte_size = 0;
-      } else {
-        const InputOverride& override = pr->second;
-        *content = reinterpret_cast<const void*>(&(override.content_[0]));
-        *content_byte_size = override.content_.size();
-        overrides_consumed_.insert(name);
-      }
-
-      return true;
-    }
-  }
-
-  return false;
-}
-
-Status
-InferRequestProvider::GetNextInputContent(
-    const std::string& name, const void** content, size_t* content_byte_size,
-    TRTSERVER_Memory_Type* memory_type, int64_t* memory_type_id)
-{
-  if (*content_byte_size == 0) {
-    *content = nullptr;
-    return Status::Success;
-  }
-
-  if (GetInputOverrideContent(name, content, content_byte_size)) {
-    *memory_type = TRTSERVER_MEMORY_CPU;
-    *memory_type_id = 0;
-  } else {
-    auto* inputs = irequest_->MutableInputs();
-    auto it = inputs->find(name);
-    if (it == inputs->end()) {
-      return Status(
-          RequestStatusCode::INTERNAL, "unexpected input '" + name + "'");
-    }
-
-    RETURN_IF_ERROR(it->second.NextContent(
-        content, content_byte_size, memory_type, memory_type_id));
-  }
-
-  return Status::Success;
-}
-
-Status
-InferRequestProvider::GetMemory(
-    const std::string& name, std::shared_ptr<Memory>* input_buffer)
-{
-  const auto& inputs = irequest_->Inputs();
-  const auto it = inputs.find(name);
-  if (it == inputs.end()) {
-    return Status(
-        RequestStatusCode::INVALID_ARG,
-        "input '" + name + "' is not found in the provider");
-  }
-
-  *input_buffer = it->second.Data();
-
-  return Status::Success;
-}
-
-Status
-InferRequestProvider::GetMemoryWithOverride(
-    const std::string& name, const Memory** input_buffer)
-{
-  const auto& inputs = irequest_->Inputs();
-  const auto it = inputs.find(name);
-  if (it != inputs.end()) {
-    *input_buffer = it->second.Data().get();
-  } else {
-    // check input overrides
-    auto found = false;
-    for (const auto& override_map : overrides_maps_) {
-      const auto& pr = override_map->find(name);
-      if (pr != override_map->end()) {
-        const InputOverride& override = pr->second;
-        *input_buffer = &override.content_ref_;
-
-        found = true;
-        break;
-      }
-    }
-
-    if (!found) {
-      return Status(
-          RequestStatusCode::INVALID_ARG,
-          "input '" + name + "' is not found in the provider");
-    }
-  }
-
-  return Status::Success;
-}
-
-//
-// NULLInferRequestProvider
-//
-std::vector<uint8_t> NULLInferRequestProvider::buf_;
-std::mutex NULLInferRequestProvider::mu_;
-
-Status
-NULLInferRequestProvider::GetNextInputContent(
-    const std::string& name, const void** content, size_t* content_byte_size,
-    TRTSERVER_Memory_Type* memory_type, int64_t* memory_type_id)
-{
-  *memory_type = TRTSERVER_MEMORY_CPU;
-  *memory_type_id = 0;
-  if (*content_byte_size == 0) {
-    *content = nullptr;
-    return Status::Success;
-  }
-
-  if (!GetInputOverrideContent(name, content, content_byte_size)) {
-    auto it = inputs_remaining_bytes_.find(name);
-    if ((it != inputs_remaining_bytes_.end()) && (it->second == 0)) {
-      *content = nullptr;
-      *content_byte_size = 0;
-    } else {
-      // If it is first time requesting the input, the byte size hint will be
-      // used as the expected input byte size.
-      if (it == inputs_remaining_bytes_.end()) {
-        it = inputs_remaining_bytes_.emplace(name, *content_byte_size).first;
-      }
-
-      std::lock_guard<std::mutex> lock(mu_);
-
-      // Must return content with all zero data. This is required by
-      // string-datatype tensors where it is interpreted as all empty
-      // strings. Clamp the maximum size that we allow the buffer to
-      // grow to avoid massive allocation.
-      if (buf_.size() < *content_byte_size) {
-        constexpr size_t max_size = 16 * 1024 * 1024;
-        buf_.resize(std::min(max_size, *content_byte_size), 0);
-      }
-
-      *content = &(buf_[0]);
-
-      // byte size to be returned is the min of actual buffer size,
-      // expected remaining size (content_byte_size), and actual remaining size
-      *content_byte_size =
-          std::min(std::min(buf_.size(), *content_byte_size), it->second);
-      it->second -= *content_byte_size;
-    }
-  }
-
-  return Status::Success;
-}
-
 namespace {
 
 template <typename T>
 void
 AddClassResults(
-    InferResponseHeader::Output* poutput, char* poutput_buffer,
-    const size_t batch1_element_count, const size_t batch_size,
-    const size_t cls_count,
+    InferResponseHeader::Output* poutput, std::vector<char>* poutput_cls,
+    char* poutput_buffer, const size_t batch1_element_count,
+    const size_t batch_size, const size_t cls_count,
     const std::shared_ptr<LabelProvider>& label_provider,
-    const InferResponseProvider::SecondaryLabelProviderMap& lookup_map)
+    const InferResponseProvider::SecondaryLabelProviderMap& lookup_map,
+    const uint32_t protocol_version)
 {
   T* probs = reinterpret_cast<T*>(poutput_buffer);
   const size_t entry_cnt = batch1_element_count;
   const size_t class_cnt = std::min(cls_count, entry_cnt);
   std::vector<size_t> idx(entry_cnt);
 
+  std::vector<std::string> raw_cls_contents;
+  size_t total_raw_size = 0;
   for (size_t i = 0; i < batch_size; ++i) {
     iota(idx.begin(), idx.end(), 0);
     sort(idx.begin(), idx.end(), [&probs](size_t i1, size_t i2) {
       return probs[i1] > probs[i2];
     });
 
-    auto bcls = poutput->add_batch_classes();
-    for (size_t k = 0; k < class_cnt; ++k) {
-      auto cls = bcls->add_cls();
-      cls->set_idx(idx[k]);
-      const auto& label = label_provider->GetLabel(poutput->name(), idx[k]);
-      cls->set_label(label);
+    if (protocol_version == 1) {
+      auto bcls = poutput->add_batch_classes();
+      for (size_t k = 0; k < class_cnt; ++k) {
+        auto cls = bcls->add_cls();
+        cls->set_idx(idx[k]);
+        const auto& label = label_provider->GetLabel(poutput->name(), idx[k]);
+        cls->set_label(label);
 
-      if (label == "" && !lookup_map.empty()) {
-        auto it = lookup_map.find(poutput->name());
-        if (it != lookup_map.end()) {
-          cls->set_label(it->second.second->GetLabel(it->second.first, idx[k]));
+        if (label == "" && !lookup_map.empty()) {
+          auto it = lookup_map.find(poutput->name());
+          if (it != lookup_map.end()) {
+            cls->set_label(
+                it->second.second->GetLabel(it->second.first, idx[k]));
+          }
         }
-      }
 
-      cls->set_value(static_cast<float>(probs[idx[k]]));
+        cls->set_value(static_cast<float>(probs[idx[k]]));
+      }
+    } else {
+      for (size_t k = 0; k < class_cnt; ++k) {
+        std::string cls_content =
+            std::to_string(idx[k]) + ":" +
+            std::to_string(static_cast<float>(probs[idx[k]]));
+
+        const auto& label = label_provider->GetLabel(poutput->name(), idx[k]);
+        if (!label.empty()) {
+          cls_content += ":";
+          cls_content += label;
+        } else if (!lookup_map.empty()) {
+          auto it = lookup_map.find(poutput->name());
+          if (it != lookup_map.end()) {
+            cls_content += ":";
+            cls_content +=
+                it->second.second->GetLabel(it->second.first, idx[k]);
+          }
+        }
+
+        total_raw_size += cls_content.size();
+        raw_cls_contents.emplace_back(std::move(cls_content));
+      }
     }
 
     probs += entry_cnt;
+  }
+
+  if (protocol_version == 2) {
+    // Need to prepare cls results as "BYTES" tensor
+    poutput_cls->reserve(
+        sizeof(uint32_t) * raw_cls_contents.size() + total_raw_size);
+    size_t offset = 0;
+    char* base = poutput_cls->data();
+    for (const auto& raw_cls_str : raw_cls_contents) {
+      *(reinterpret_cast<uint32_t*>(base + offset)) = raw_cls_str.size();
+      offset += sizeof(uint32_t);
+      memcpy(base + offset, raw_cls_str.data(), raw_cls_str.size());
+      offset += raw_cls_str.size();
+    }
   }
 }
 
@@ -332,10 +136,32 @@ InferResponseProvider::InferResponseProvider(
     const std::shared_ptr<LabelProvider>& label_provider,
     TRTSERVER_ResponseAllocator* allocator,
     TRTSERVER_ResponseAllocatorAllocFn_t alloc_fn, void* alloc_userp,
-    TRTSERVER_ResponseAllocatorReleaseFn_t release_fn)
+    TRTSERVER_ResponseAllocatorReleaseFn_t release_fn,
+    const uint32_t protocol_version)
     : irequest_(irequest), label_provider_(label_provider),
       allocator_(allocator), alloc_fn_(alloc_fn), alloc_userp_(alloc_userp),
-      release_fn_(release_fn)
+      release_fn_(release_fn), using_triton_(false),
+      protocol_version_(protocol_version)
+{
+  // Create a map from output name to the InferenceRequest::Output
+  // object for that output.
+  for (const auto& pr : irequest_->RequestedOutputs()) {
+    const auto& output = pr.second;
+    output_map_.emplace(std::make_pair(output.Name(), output));
+  }
+}
+
+InferResponseProvider::InferResponseProvider(
+    const std::shared_ptr<InferenceRequest>& irequest,
+    const std::shared_ptr<LabelProvider>& label_provider,
+    TRITONSERVER_ResponseAllocator* allocator,
+    TRITONSERVER_ResponseAllocatorAllocFn_t alloc_fn, void* alloc_userp,
+    TRITONSERVER_ResponseAllocatorReleaseFn_t release_fn,
+    const uint32_t protocol_version)
+    : irequest_(irequest), label_provider_(label_provider),
+      alloc_userp_(alloc_userp), using_triton_(true),
+      triton_allocator_(allocator), triton_alloc_fn_(alloc_fn),
+      triton_release_fn_(release_fn), protocol_version_(protocol_version)
 {
   // Create a map from output name to the InferenceRequest::Output
   // object for that output.
@@ -367,7 +193,51 @@ InferResponseProvider::OutputBufferContents(
   }
 
   return Status(
-      RequestStatusCode::UNAVAILABLE,
+      Status::Code::UNAVAILABLE,
+      "request for unallocated output '" + name + "'");
+}
+
+Status
+InferResponseProvider::OutputBufferContents(
+    const std::string& name, const void** content, size_t* content_byte_size,
+    TRITONSERVER_Memory_Type* memory_type, int64_t* memory_type_id) const
+{
+  for (const auto& output : outputs_) {
+    if (name == output.name_) {
+      if ((output.cls_count_ == 0)) {
+        *content = output.ptr_;
+        *content_byte_size = output.byte_size_;
+        *memory_type = TrtMemTypeToTriton(output.memory_type_);
+        *memory_type_id = output.memory_type_id_;
+      } else {
+        *content = output.cls_contents_.data();
+        *content_byte_size = output.cls_contents_.size();
+        *memory_type = TRITONSERVER_MEMORY_CPU;
+        *memory_type_id = 0;
+      }
+      return Status::Success;
+    }
+  }
+
+  return Status(
+      Status::Code::UNAVAILABLE,
+      "request for unallocated output '" + name + "'");
+}
+
+Status
+InferResponseProvider::OutputShape(
+    const std::string& name, const int64_t** shape, uint64_t* dim_count) const
+{
+  for (const auto& output : outputs_) {
+    if (name == output.name_) {
+      *shape = output.shape_.data();
+      *dim_count = output.shape_.size();
+      return Status::Success;
+    }
+  }
+
+  return Status(
+      Status::Code::UNAVAILABLE,
       "request for unallocated output '" + name + "'");
 }
 
@@ -403,7 +273,7 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
   response_header->set_batch_size(batch_size);
 
   int output_idx = 0;
-  for (const auto& output : outputs_) {
+  for (auto& output : outputs_) {
     const ModelOutput* output_config;
     RETURN_IF_ERROR(is.GetOutput(output.name_, &output_config));
 
@@ -427,7 +297,7 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
                                          : output_config->dims();
     if (!CompareDimsWithWildcard(expected_shape, batch1_backend_shape)) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "output '" + output.name_ + "' for model '" + is.Name() +
               "' has shape " + DimsListToString(batch1_backend_shape) +
               " but model configuration specifies shape " +
@@ -438,7 +308,11 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
     poutput->set_name(output.name_);
 
     if (irequest_->ProtocolVersion() == 2) {
-      poutput->set_data_type(output_config->data_type());
+      if (output.cls_count_ == 0) {
+        poutput->set_data_type(output_config->data_type());
+      } else {
+        poutput->set_data_type(DataType::TYPE_STRING);
+      }
     }
 
     if (output.cls_count_ == 0) {
@@ -476,75 +350,100 @@ InferResponseProvider::FinalizeResponse(const InferenceBackend& is)
       } else {
         poutput->mutable_raw()->mutable_dims()->MergeFrom(batch1_backend_shape);
       }
+
+      if (irequest_->ProtocolVersion() == 2) {
+        // override the output.shape_ to match the expected shape in v2
+        output.shape_.clear();
+        for (const auto d : poutput->raw().dims()) {
+          output.shape_.push_back(d);
+        }
+      }
     } else {
+      if (irequest_->ProtocolVersion() == 2) {
+        // override the output.shape_ to match the expected shape in v2
+        output.shape_.clear();
+        output.shape_.push_back(batch_size);
+        output.shape_.push_back(output.cls_count_);
+      }
+
       // Class result...
       switch (output_config->data_type()) {
         case DataType::TYPE_UINT8:
           AddClassResults<uint8_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_UINT16:
           AddClassResults<uint16_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_UINT32:
           AddClassResults<uint32_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_UINT64:
           AddClassResults<uint64_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
 
         case DataType::TYPE_INT8:
           AddClassResults<int8_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_INT16:
           AddClassResults<int16_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_INT32:
           AddClassResults<int32_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_INT64:
           AddClassResults<int64_t>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
 
         case DataType::TYPE_FP32:
           AddClassResults<float>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
         case DataType::TYPE_FP64:
           AddClassResults<double>(
-              poutput, output.buffer_.get(), batch1_element_count, batch_size,
-              output.cls_count_, label_provider_,
-              secondary_label_provider_map_);
+              poutput, &output.cls_contents_, output.buffer_.get(),
+              batch1_element_count, batch_size, output.cls_count_,
+              label_provider_, secondary_label_provider_map_,
+              protocol_version_);
           break;
 
         default:
           return Status(
-              RequestStatusCode::INVALID_ARG,
+              Status::Code::INVALID_ARG,
               "class result not available for output '" + output.name_ +
                   "' due to unsupported type '" +
                   DataType_Name(output_config->data_type()) + "'");
@@ -564,10 +463,30 @@ InferResponseProvider::Create(
     TRTSERVER_ResponseAllocator* allocator,
     TRTSERVER_ResponseAllocatorAllocFn_t alloc_fn, void* alloc_userp,
     TRTSERVER_ResponseAllocatorReleaseFn_t release_fn,
+    const uint32_t protocol_version,
     std::shared_ptr<InferResponseProvider>* infer_provider)
 {
   InferResponseProvider* provider = new InferResponseProvider(
-      irequest, label_provider, allocator, alloc_fn, alloc_userp, release_fn);
+      irequest, label_provider, allocator, alloc_fn, alloc_userp, release_fn,
+      protocol_version);
+  infer_provider->reset(provider);
+
+  return Status::Success;
+}
+
+Status
+InferResponseProvider::Create(
+    const std::shared_ptr<InferenceRequest>& irequest,
+    const std::shared_ptr<LabelProvider>& label_provider,
+    TRITONSERVER_ResponseAllocator* allocator,
+    TRITONSERVER_ResponseAllocatorAllocFn_t alloc_fn, void* alloc_userp,
+    TRITONSERVER_ResponseAllocatorReleaseFn_t release_fn,
+    const uint32_t protocol_version,
+    std::shared_ptr<InferResponseProvider>* infer_provider)
+{
+  InferResponseProvider* provider = new InferResponseProvider(
+      irequest, label_provider, allocator, alloc_fn, alloc_userp, release_fn,
+      protocol_version);
   infer_provider->reset(provider);
 
   return Status::Success;
@@ -587,9 +506,26 @@ InferResponseProvider::~InferResponseProvider()
                   << cudaGetErrorString(cuerr);
       }
 #endif  // TRTIS_ENABLE_GPU
-      TRTSERVER_Error* err = release_fn_(
-          allocator_, output.release_buffer_, output.release_userp_,
-          output.byte_size_, output.memory_type_, output.memory_type_id_);
+      if (!using_triton_) {
+        auto err = release_fn_(
+            allocator_, output.release_buffer_, output.release_userp_,
+            output.byte_size_, output.memory_type_, output.memory_type_id_);
+        if (err != nullptr) {
+          LOG_ERROR << "failed to release result tensor '" << output.name_
+                    << "': " << TRTSERVER_ErrorMessage(err);
+          TRTSERVER_ErrorDelete(err);
+        }
+      } else {
+        auto err = triton_release_fn_(
+            triton_allocator_, output.release_buffer_, output.release_userp_,
+            output.byte_size_, TrtMemTypeToTriton(output.memory_type_),
+            output.memory_type_id_);
+        if (err != nullptr) {
+          LOG_ERROR << "failed to release result tensor '" << output.name_
+                    << "': " << TRITONSERVER_ErrorMessage(err);
+          TRITONSERVER_ErrorDelete(err);
+        }
+      }
 #ifdef TRTIS_ENABLE_GPU
       cuerr = cudaSetDevice(current_device);
       if ((cuerr != cudaSuccess) && (cuerr != cudaErrorNoDevice) &&
@@ -598,11 +534,6 @@ InferResponseProvider::~InferResponseProvider()
                   << cudaGetErrorString(cuerr);
       }
 #endif  // TRTIS_ENABLE_GPU
-      if (err != nullptr) {
-        LOG_ERROR << "failed to release result tensor '" << output.name_
-                  << "': " << TRTSERVER_ErrorMessage(err);
-        TRTSERVER_ErrorDelete(err);
-      }
     }
   }
 }
@@ -631,8 +562,7 @@ InferResponseProvider::AllocateOutputBuffer(
 
   const auto& pr = output_map_.find(name);
   if (pr == output_map_.end()) {
-    return Status(
-        RequestStatusCode::INTERNAL, "unexpected output '" + name + "'");
+    return Status(Status::Code::INTERNAL, "unexpected output '" + name + "'");
   }
 
   outputs_.emplace_back();
@@ -655,7 +585,7 @@ InferResponseProvider::AllocateOutputBuffer(
     // For class result no additional buffer is needed.
     if (content_byte_size == 0) {
       Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "Classification result is requested for output '" + name + "'" +
               " while its output buffer size is 0");
     }
@@ -683,15 +613,37 @@ InferResponseProvider::AllocateOutputBuffer(
   if ((cuerr != cudaSuccess) && (cuerr != cudaErrorNoDevice) &&
       (cuerr != cudaErrorInsufficientDriver)) {
     return Status(
-        RequestStatusCode::INTERNAL,
-        "unable to get current CUDA device: " +
-            std::string(cudaGetErrorString(cuerr)));
+        Status::Code::INTERNAL, "unable to get current CUDA device: " +
+                                    std::string(cudaGetErrorString(cuerr)));
   }
 #endif  // TRTIS_ENABLE_GPU
-  TRTSERVER_Error* err = alloc_fn_(
-      allocator_, name.c_str(), alloc_byte_size, preferred_memory_type,
-      preferred_memory_type_id, alloc_userp_, &buffer, &buffer_userp,
-      &raw_actual_memory_type, &raw_actual_memory_type_id);
+  Status status;
+  if (!using_triton_) {
+    auto err = alloc_fn_(
+        allocator_, name.c_str(), alloc_byte_size, preferred_memory_type,
+        preferred_memory_type_id, alloc_userp_, &buffer, &buffer_userp,
+        &raw_actual_memory_type, &raw_actual_memory_type_id);
+    if (err != nullptr) {
+      status = Status(
+          TrtServerCodeToStatusCode(TRTSERVER_ErrorCode(err)),
+          TRTSERVER_ErrorMessage(err));
+      TRTSERVER_ErrorDelete(err);
+    }
+  } else {
+    TRITONSERVER_Memory_Type triton_actual_memory_type;
+    auto err = triton_alloc_fn_(
+        triton_allocator_, name.c_str(), alloc_byte_size,
+        TrtMemTypeToTriton(preferred_memory_type), preferred_memory_type_id,
+        alloc_userp_, &buffer, &buffer_userp, &triton_actual_memory_type,
+        &raw_actual_memory_type_id);
+    raw_actual_memory_type = TritonMemTypeToTrt(triton_actual_memory_type);
+    if (err != nullptr) {
+      status = Status(
+          TritonServerCodeToStatusCode(TRITONSERVER_ErrorCode(err)),
+          TRITONSERVER_ErrorMessage(err));
+      TRITONSERVER_ErrorDelete(err);
+    }
+  }
   if (!is_class) {
     *content = buffer;
     loutput->ptr_ = buffer;
@@ -703,23 +655,15 @@ InferResponseProvider::AllocateOutputBuffer(
     loutput->memory_type_id_ = 0;
   }
 
-  Status status;
 #ifdef TRTIS_ENABLE_GPU
   cuerr = cudaSetDevice(current_device);
   if ((cuerr != cudaSuccess) && (cuerr != cudaErrorNoDevice) &&
       (cuerr != cudaErrorInsufficientDriver)) {
     status = Status(
-        RequestStatusCode::INTERNAL,
-        "unable to recover current CUDA device: " +
-            std::string(cudaGetErrorString(cuerr)));
+        Status::Code::INTERNAL, "unable to recover current CUDA device: " +
+                                    std::string(cudaGetErrorString(cuerr)));
   }
 #endif  // TRTIS_ENABLE_GPU
-  if (err != nullptr) {
-    status = Status(
-        TrtServerCodeToRequestStatus(TRTSERVER_ErrorCode(err)),
-        TRTSERVER_ErrorMessage(err));
-    TRTSERVER_ErrorDelete(err);
-  }
   if (!status.IsOk()) {
     return status;
   }

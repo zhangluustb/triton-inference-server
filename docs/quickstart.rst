@@ -58,7 +58,7 @@ following prerequisite steps:
   sure to select the r<xx.yy> release branch that corresponds to the
   version of the server you want to use::
 
-  $ git checkout r20.02
+  $ git checkout r20.03
 
 * Create a model repository containing one or more models that you
   want the inference server to serve. An example model repository is
@@ -72,10 +72,6 @@ following prerequisite steps:
 
 If you are starting with a pre-built NGC container perform these
 additional steps:
-
-* Ensure you have access and are logged into NGC.  For step-by-step
-  instructions, see the `NGC Getting Started Guide
-  <http://docs.nvidia.com/ngc/ngc-getting-started-guide/index.html>`_.
 
 * Install Docker and nvidia-docker.  For DGX users, see `Preparing to
   use NVIDIA Containers
@@ -116,7 +112,7 @@ GitHub repo and checkout the release version of the branch that you
 want to build (or the master branch if you want to build the
 under-development version)::
 
-  $ git checkout r20.02
+  $ git checkout r20.03
 
 Then use docker to build::
 
@@ -159,7 +155,7 @@ Assuming the example model repository is available in
 /full/path/to/example/model/repository, if you build using Docker use
 the following command to run the inference server container::
 
-  $ nvidia-docker run --rm --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 -p8000:8000 -p8001:8001 -p8002:8002 -v/full/path/to/example/model/repository:/models <docker image> trtserver --model-repository=/models
+  $ nvidia-docker run --rm --shm-size=1g --ulimit memlock=-1 --ulimit stack=67108864 -p8000:8000 -p8001:8001 -p8002:8002 -v/full/path/to/example/model/repository:/models <docker image> tritonserver --model-repository=/models
 
 Where <docker image> is *nvcr.io/nvidia/tritonserver:<xx.yy>-py3* if
 you pulled the inference server container from NGC, or is
@@ -167,7 +163,7 @@ you pulled the inference server container from NGC, or is
 
 If you built using CMake run the inference server directly on your host system::
 
-    $ trtserver --model-repository=/full/path/to/example/model/repository
+    $ tritonserver --model-repository=/full/path/to/example/model/repository
 
 In either case, after you start the inference server you will see
 output on the console showing the server starting up and loading the

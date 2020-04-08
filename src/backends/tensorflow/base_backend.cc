@@ -1,4 +1,4 @@
-// Copyright (c) 2018-2019, NVIDIA CORPORATION. All rights reserved.
+// Copyright (c) 2018-2020, NVIDIA CORPORATION. All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -155,9 +155,9 @@ BaseBackend::CreateExecutionContext(
     cudaError_t cuerr = cudaGetDeviceProperties(&cuprops, gpu_device);
     if (cuerr != cudaSuccess) {
       return Status(
-          RequestStatusCode::INTERNAL,
-          "unable to get CUDA device properties for " + Name() + ": " +
-              cudaGetErrorString(cuerr));
+          Status::Code::INTERNAL, "unable to get CUDA device properties for " +
+                                      Name() + ": " +
+                                      cudaGetErrorString(cuerr));
     }
 
     const std::string cc =
@@ -176,14 +176,14 @@ BaseBackend::CreateExecutionContext(
     LOG_INFO << "Creating instance " << instance_name << " on GPU "
              << vgpu_device << " (" << cc << ") using " << cc_model_filename;
 #else
-    return Status(RequestStatusCode::INTERNAL, "GPU instances not supported");
+    return Status(Status::Code::INTERNAL, "GPU instances not supported");
 #endif  // TRTIS_ENABLE_GPU
   }
 
   const auto& gdp_itr = paths.find(cc_model_filename);
   if (gdp_itr == paths.end()) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "unable to find model '" + cc_model_filename + "' for " + Name());
   }
 
@@ -222,13 +222,13 @@ BaseBackend::CreateExecutionContext(
              .cpu_execution_accelerator()
              .empty()) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "CPU Execution Accelerator is not supported in TensorFlow backend");
     }
 
     if (gpu_device == Context::NO_GPU_DEVICE) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "GPU Execution Accelerator can only be set on non-CPU backend "
           "context");
     }
@@ -246,9 +246,9 @@ BaseBackend::CreateExecutionContext(
               tftrt_config.precision_mode_ = TRTISTF_MODE_FP16;
             } else {
               return Status(
-                  RequestStatusCode::INVALID_ARG,
-                  "unsupported precision mode '" + parameter.second +
-                      "' is requested");
+                  Status::Code::INVALID_ARG, "unsupported precision mode '" +
+                                                 parameter.second +
+                                                 "' is requested");
             }
           } else if (parameter.first == "minimum_segment_size") {
             RETURN_IF_ERROR(ParseLongLongParameter(
@@ -264,7 +264,7 @@ BaseBackend::CreateExecutionContext(
                 &tftrt_config.max_cached_engines_));
           } else {
             return Status(
-                RequestStatusCode::INVALID_ARG,
+                Status::Code::INVALID_ARG,
                 "unknown parameter '" + parameter.first +
                     "' is provided for TensorRT Execution Accelerator");
           }
@@ -280,9 +280,9 @@ BaseBackend::CreateExecutionContext(
         }
       } else {
         return Status(
-            RequestStatusCode::INVALID_ARG, "unknown Execution Accelerator '" +
-                                                execution_accelerator.name() +
-                                                "' is requested");
+            Status::Code::INVALID_ARG, "unknown Execution Accelerator '" +
+                                           execution_accelerator.name() +
+                                           "' is requested");
       }
     }
     tftrt_config_ptr = &tftrt_config;
@@ -324,7 +324,7 @@ BaseBackend::Context::ValidateInputs(
     if (ConvertDataType(io.data_type()) ==
         TRTISTF_DataType::TRTISTF_TYPE_INVALID) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unsupported datatype " + DataType_Name(io.data_type()) +
               " for input '" + io.name() + "' for model '" + name_ + "'");
     }
@@ -342,7 +342,7 @@ BaseBackend::Context::ValidateOutputs(
     if (ConvertDataType(io.data_type()) ==
         TRTISTF_DataType::TRTISTF_TYPE_INVALID) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unsupported datatype " + DataType_Name(io.data_type()) +
               " for output '" + io.name() + "' for model '" + name_ + "'");
     }
@@ -370,8 +370,9 @@ BaseBackend::Context::SetInput(
     std::vector<Scheduler::Payload>* payloads, std::vector<InputInfo>* inputs,
     TRTISTF_TensorList** input_tensors, bool* cuda_copy)
 {
-  // Get the shape of the input. The provider has already checked
-  // that the request shape is valid so don't need to do it here.
+  // Get the shape of the input. The request normalizer has already
+  // checked that the request shape is valid so don't need to do it
+  // here.
   std::vector<int64_t> shape;
 
   // If model supports batching then prepend the batch dimension
@@ -399,7 +400,7 @@ BaseBackend::Context::SetInput(
       (shape.size() == 0) ? nullptr : &shape[0], input_device_id_);
   if (tensor == nullptr) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "failed to create input tensor '" + name + "' with shape " +
             DimsListToString(shape) + " and data type " +
             DataType_Name(datatype) + " for '" + name_ + "'");
@@ -414,7 +415,7 @@ BaseBackend::Context::SetInput(
     if ((batch1_byte_size * total_batch_size) !=
         TRTISTF_TensorDataByteSize(tensor)) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "failed to create input tensor '" + name +
               "' with expected byte size " +
               std::to_string(batch1_byte_size * total_batch_size) + ", got " +
@@ -443,7 +444,7 @@ BaseBackend::Context::SetFixedSizedInputTensor(
   // included in the dynamic batch.
   std::vector<size_t> expected_byte_sizes;
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     expected_byte_sizes.push_back(irequest->BatchSize() * batch1_byte_size);
   }
 
@@ -469,7 +470,7 @@ BaseBackend::Context::SetStringInputTensor(
   // input tensor. Skip payloads that had errors since they are not
   // included in the dynamic batch.
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     const size_t expected_element_cnt =
         irequest->BatchSize() * batch1_element_cnt;
     size_t element_idx = 0;
@@ -508,7 +509,7 @@ BaseBackend::Context::SetStringInputTensor(
     while (content_byte_size >= sizeof(uint32_t)) {
       if (element_idx >= expected_element_cnt) {
         payload.status_ = Status(
-            RequestStatusCode::INVALID_ARG,
+            Status::Code::INVALID_ARG,
             "unexpected number of string elements " +
                 std::to_string(element_idx + 1) + " for inference input '" +
                 input_name + "', expecting " +
@@ -525,7 +526,7 @@ BaseBackend::Context::SetStringInputTensor(
 
       if (content_byte_size < len) {
         payload.status_ = Status(
-            RequestStatusCode::INVALID_ARG,
+            Status::Code::INVALID_ARG,
             "incomplete string data for inference input '" + input_name +
                 "', expecting string of length " + std::to_string(len) +
                 " but only " + std::to_string(content_byte_size) +
@@ -545,7 +546,7 @@ BaseBackend::Context::SetStringInputTensor(
 
     if (payload.status_.IsOk() && (element_idx != expected_element_cnt)) {
       payload.status_ = Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "expected " + std::to_string(expected_element_cnt) +
               " strings for inference input '" + input_name + "', got " +
               std::to_string(element_idx));
@@ -585,7 +586,7 @@ BaseBackend::Context::ReadStringOutputTensor(
   size_t tensor_element_idx = 0;
 
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     const size_t expected_element_cnt =
         irequest->BatchSize() * batch1_element_cnt;
 
@@ -643,26 +644,26 @@ BaseBackend::Context::Run(
   LOG_VERBOSE(1) << "Running " << name_ << " with " << payloads->size()
                  << " request payloads";
 
-  std::shared_ptr<InferRequestProvider> input_request_provider;
+  const InferenceRequest* repr_input_request = nullptr;
 
   // For each request in 'payloads' collect the total batch size for
   // this inference execution. The batch-size, number of inputs, and
   // size of each input has already been checked by each payloads
-  // request provider so don't need to do that here.
+  // request normalizer so don't need to do that here.
   size_t total_batch_size = 0;
   for (auto& payload : *payloads) {
     if (!payload.status_.IsOk()) {
       return Status(
-          RequestStatusCode::INTERNAL,
+          Status::Code::INTERNAL,
           "unexpected payload with non-OK status given to runner for '" +
               name_ + "'");
     }
 
-    total_batch_size += payload.request_provider_->Request()->BatchSize();
+    total_batch_size += payload.request_->BatchSize();
 
     // All payloads must have equally-sized input tensors so use any
     // payload as the representative for the input tensors.
-    input_request_provider = payload.request_provider_;
+    repr_input_request = payload.request_.get();
   }
 
   // If there are no valid payloads then no need to run the
@@ -676,7 +677,7 @@ BaseBackend::Context::Run(
   // (i.e. max_batch_size_ == 0).
   if ((total_batch_size != 1) && (total_batch_size > (size_t)max_batch_size_)) {
     return Status(
-        RequestStatusCode::INTERNAL,
+        Status::Code::INTERNAL,
         "dynamic batch size " + std::to_string(total_batch_size) + " for '" +
             name_ + "', max allowed is " + std::to_string(max_batch_size_));
   }
@@ -699,36 +700,20 @@ BaseBackend::Context::Run(
   // Inputs from the request...
   std::vector<InputInfo> inputs;
   bool cuda_copy = false;
-  for (const auto& pr : input_request_provider->Request()->Inputs()) {
-    const auto& input = pr.second;
-    const std::string& name = input.Name();
-
-    const ModelInput* input_config;
-    RETURN_IF_ERROR(base->GetInput(name, &input_config));
+  for (const auto& pr : repr_input_request->ImmutableInputs()) {
+    const InferenceRequest::Input* input = pr.second;
+    const std::string& name = input->Name();
 
     RETURN_IF_ERROR(SetInput(
-        name, input_config->data_type(), input.Shape(), total_batch_size,
-        payloads, &inputs, input_tensors.get(), &cuda_copy));
-  }
-
-  // Additional inputs added to the provider...
-  const InferRequestProvider::InputOverrideMapVec& input_override_maps =
-      input_request_provider->GetInputOverrides();
-  for (const auto& ovr_map : input_override_maps) {
-    for (const auto& pr : *ovr_map) {
-      const std::string& name = pr.first;
-      const InferRequestProvider::InputOverride& override = pr.second;
-      RETURN_IF_ERROR(SetInput(
-          name, override.datatype_, override.dims_, total_batch_size, payloads,
-          &inputs, input_tensors.get(), &cuda_copy));
-    }
+        name, input->DType(), input->Shape(), total_batch_size, payloads,
+        &inputs, input_tensors.get(), &cuda_copy));
   }
 
   // Collect the names of outputs requested by any request
   // payload.
   std::set<std::string> required_outputs;
   for (auto& payload : *payloads) {
-    const auto& irequest = payload.request_provider_->Request();
+    const auto& irequest = payload.request_;
     for (const auto& pr : irequest->RequestedOutputs()) {
       required_outputs.insert(pr.first);
     }
@@ -855,7 +840,7 @@ BaseBackend::Context::Run(
     TRTISTF_DataType dtype = ConvertDataType(output_config->data_type());
     if (dtype != TRTISTF_TensorDataType(output_tensor)) {
       return Status(
-          RequestStatusCode::INVALID_ARG,
+          Status::Code::INVALID_ARG,
           "unexpected datatype " +
               DataType_Name(
                   ConvertDataType(TRTISTF_TensorDataType(output_tensor))) +
@@ -869,7 +854,7 @@ BaseBackend::Context::Run(
       if ((batch1_byte_size * total_batch_size) !=
           TRTISTF_TensorDataByteSize(output_tensor)) {
         return Status(
-            RequestStatusCode::INVALID_ARG,
+            Status::Code::INVALID_ARG,
             "unexpected size for output '" + name + "', byte-size " +
                 std::to_string(TRTISTF_TensorDataByteSize(output_tensor)) +
                 " does not equal " + std::to_string(total_batch_size) + " * " +

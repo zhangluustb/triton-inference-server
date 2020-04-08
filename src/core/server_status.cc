@@ -72,7 +72,7 @@ ServerStatusManager::UpdateConfigForModel(
   auto& ms = *server_status_.mutable_model_status();
   if (ms.find(model_name) == ms.end()) {
     return Status(
-        RequestStatusCode::INVALID_ARG,
+        Status::Code::INVALID_ARG,
         "try to update config for non-existing model '" + model_name + "'");
   } else {
     LOG_INFO << "Updating config for model '" << model_name << "'";
@@ -92,7 +92,7 @@ ServerStatusManager::SetModelVersionReadyState(
   auto itr = server_status_.mutable_model_status()->find(model_name);
   if (itr == server_status_.model_status().end()) {
     return Status(
-        RequestStatusCode::INVALID_ARG,
+        Status::Code::INVALID_ARG,
         "fail to update ready state for unknown model '" + model_name + "'");
   }
 
@@ -142,7 +142,7 @@ ServerStatusManager::Get(
   const auto& itr = server_status_.model_status().find(model_name);
   if (itr == server_status_.model_status().end()) {
     return Status(
-        RequestStatusCode::INVALID_ARG,
+        Status::Code::INVALID_ARG,
         "no status available for unknown model '" + model_name + "'");
   }
 
@@ -314,6 +314,93 @@ ServerStatusManager::UpdateSuccessInferStats(
   }
 }
 
+void
+ServerStatusManager::UpdateSuccessInferStats(
+    const std::string& model_name, const int64_t model_version,
+    uint32_t execution_cnt, uint64_t last_timestamp_ms,
+    uint64_t request_duration_ns, uint64_t queue_duration_ns,
+    uint64_t compute_input_duration_ns, uint64_t compute_infer_duration_ns,
+    uint64_t compute_output_duration_ns)
+{
+  std::lock_guard<std::mutex> lock(mu_);
+
+  // Model must exist...
+  auto itr = server_status_.mutable_model_status()->find(model_name);
+  if (itr == server_status_.model_status().end()) {
+    LOG_ERROR << "can't update duration stat for " << model_name;
+  } else {
+    // model version
+    auto& mvs = *itr->second.mutable_version_status();
+    auto mvs_itr = mvs.find(model_version);
+    InferRequestStats* new_stats = nullptr;
+    InferRequestStats* existing_stats = nullptr;
+    if (mvs_itr == mvs.end()) {
+      ModelVersionStatus& version_status = mvs[model_version];
+      version_status.set_model_inference_count(1);
+      version_status.set_model_execution_count(execution_cnt);
+      version_status.set_last_inference_timestamp_milliseconds(
+          last_timestamp_ms);
+      new_stats = &((*version_status.mutable_infer_stats())[1]);
+    } else {
+      ModelVersionStatus& version_status = mvs_itr->second;
+      version_status.set_model_inference_count(
+          version_status.model_inference_count() + 1);
+      version_status.set_model_execution_count(
+          version_status.model_execution_count() + execution_cnt);
+      if (last_timestamp_ms > 0) {
+        version_status.set_last_inference_timestamp_milliseconds(
+            last_timestamp_ms);
+      }
+
+      auto& is = *version_status.mutable_infer_stats();
+      auto is_itr = is.find(1);
+      if (is_itr == is.end()) {
+        new_stats = &is[1];
+      } else {
+        existing_stats = &is_itr->second;
+      }
+    }
+
+    if (new_stats != nullptr) {
+      new_stats->mutable_success()->set_count(1);
+      new_stats->mutable_success()->set_total_time_ns(request_duration_ns);
+      new_stats->mutable_compute_input()->set_count(1);
+      new_stats->mutable_compute_input()->set_total_time_ns(
+          compute_input_duration_ns);
+      new_stats->mutable_compute_infer()->set_count(1);
+      new_stats->mutable_compute_infer()->set_total_time_ns(
+          compute_infer_duration_ns);
+      new_stats->mutable_compute_output()->set_count(1);
+      new_stats->mutable_compute_output()->set_total_time_ns(
+          compute_output_duration_ns);
+      new_stats->mutable_queue()->set_count(1);
+      new_stats->mutable_queue()->set_total_time_ns(queue_duration_ns);
+    } else if (existing_stats != nullptr) {
+      InferRequestStats& stats = *existing_stats;
+      stats.mutable_success()->set_count(stats.success().count() + 1);
+      stats.mutable_success()->set_total_time_ns(
+          stats.success().total_time_ns() + request_duration_ns);
+      stats.mutable_compute_input()->set_count(
+          stats.compute_input().count() + 1);
+      stats.mutable_compute_input()->set_total_time_ns(
+          stats.compute_input().total_time_ns() + compute_input_duration_ns);
+      stats.mutable_compute_infer()->set_count(
+          stats.compute_infer().count() + 1);
+      stats.mutable_compute_infer()->set_total_time_ns(
+          stats.compute_infer().total_time_ns() + compute_infer_duration_ns);
+      stats.mutable_compute_output()->set_count(
+          stats.compute_output().count() + 1);
+      stats.mutable_compute_output()->set_total_time_ns(
+          stats.compute_output().total_time_ns() + compute_output_duration_ns);
+      stats.mutable_queue()->set_count(stats.queue().count() + 1);
+      stats.mutable_queue()->set_total_time_ns(
+          stats.queue().total_time_ns() + queue_duration_ns);
+    } else {
+      LOG_ERROR << "Internal error logging INFER stats for " << model_name;
+    }
+  }
+}
+
 ServerStatTimerScoped::~ServerStatTimerScoped()
 {
   // Do nothing reporting is disabled...
@@ -333,23 +420,27 @@ ServerStatTimerScoped::~ServerStatTimerScoped()
 #ifdef TRTIS_ENABLE_STATS
 
 void
-ModelInferStats::NewTrace(TRTSERVER_Trace* parent)
+ModelInferStats::NewTrace(Trace* parent)
 {
 #ifdef TRTIS_ENABLE_TRACING
   if (trace_manager_ != nullptr) {
     auto ltrace_manager = reinterpret_cast<OpaqueTraceManager*>(trace_manager_);
-    TRTSERVER_Trace* trace = nullptr;
-    ltrace_manager->create_fn_(
-        &trace, model_name_.c_str(), requested_model_version_,
-        ltrace_manager->userp_);
-    if (trace != nullptr) {
-      auto ltrace = reinterpret_cast<Trace*>(trace);
-      ltrace->SetModelName(model_name_);
-      ltrace->SetModelVersion(requested_model_version_);
+    trace_ = nullptr;
+    if (trace_manager_->using_triton_) {
+      ltrace_manager->triton_create_fn_(
+          reinterpret_cast<TRITONSERVER_Trace**>(&trace_), model_name_.c_str(),
+          requested_model_version_, ltrace_manager->userp_);
+    } else {
+      ltrace_manager->create_fn_(
+          reinterpret_cast<TRTSERVER_Trace**>(&trace_), model_name_.c_str(),
+          requested_model_version_, ltrace_manager->userp_);
+    }
+    if (trace_ != nullptr) {
+      trace_->SetModelName(model_name_);
+      trace_->SetModelVersion(requested_model_version_);
       if (parent != nullptr) {
-        ltrace->SetParentId(reinterpret_cast<Trace*>(parent)->Id());
+        trace_->SetParentId(parent->Id());
       }
-      trace_ = trace;
     }
   }
 #endif  // TRTIS_ENABLE_TRACING
@@ -360,12 +451,17 @@ ModelInferStats::Report()
 {
 #ifdef TRTIS_ENABLE_TRACING
   if (trace_ != nullptr) {
-    auto ltrace = reinterpret_cast<Trace*>(trace_);
-    ltrace->Report(this);
+    trace_->Report(this);
     // Inform that the trace object is done and can be released
-    auto ltrace_manager = reinterpret_cast<OpaqueTraceManager*>(trace_manager_);
-    ltrace_manager->release_fn_(
-        trace_, ltrace->ActivityUserp(), ltrace_manager->userp_);
+    if (trace_manager_->using_triton_) {
+      trace_manager_->triton_release_fn_(
+          reinterpret_cast<TRITONSERVER_Trace*>(trace_),
+          trace_->ActivityUserp(), trace_manager_->userp_);
+    } else {
+      trace_manager_->release_fn_(
+          reinterpret_cast<TRTSERVER_Trace*>(trace_), trace_->ActivityUserp(),
+          trace_manager_->userp_);
+    }
   }
 #endif  // TRTIS_ENABLE_TRACING
 
@@ -378,8 +474,9 @@ ModelInferStats::Report()
 
   const uint64_t request_duration_ns =
       Duration(TimestampKind::kRequestStart, TimestampKind::kRequestEnd);
-  const uint64_t last_timestamp_ms =
-      TIMESPEC_TO_MILLIS(Timestamp(TimestampKind::kRequestStart));
+  struct timespec last_ts;
+  clock_gettime(CLOCK_REALTIME, &last_ts);
+  const uint64_t last_timestamp_ms = TIMESPEC_TO_MILLIS(last_ts);
 
   if (failed_) {
     status_manager_->UpdateFailedInferStats(
@@ -398,10 +495,31 @@ ModelInferStats::Report()
         extra_compute_duration_ +
         Duration(TimestampKind::kComputeStart, TimestampKind::kComputeEnd);
 
-    status_manager_->UpdateSuccessInferStats(
-        model_name_, model_version, batch_size_, execution_count_,
-        last_timestamp_ms, request_duration_ns, queue_duration_ns,
-        compute_duration_ns);
+    if (status_manager_->GetProtocolVersion() == 2) {
+      uint64_t compute_input_duration_ns =
+          extra_compute_input_duration_ +
+          Duration(
+              TimestampKind::kComputeStart, TimestampKind::kComputeInputEnd);
+      uint64_t compute_infer_duration_ns =
+          extra_compute_infer_duration_ +
+          Duration(
+              TimestampKind::kComputeInputEnd,
+              TimestampKind::kComputeOutputStart);
+      uint64_t compute_output_duration_ns =
+          extra_compute_output_duration_ +
+          Duration(
+              TimestampKind::kComputeOutputStart, TimestampKind::kComputeEnd);
+
+      status_manager_->UpdateSuccessInferStats(
+          model_name_, model_version, execution_count_, last_timestamp_ms,
+          request_duration_ns, queue_duration_ns, compute_input_duration_ns,
+          compute_infer_duration_ns, compute_output_duration_ns);
+    } else {
+      status_manager_->UpdateSuccessInferStats(
+          model_name_, model_version, batch_size_, execution_count_,
+          last_timestamp_ms, request_duration_ns, queue_duration_ns,
+          compute_duration_ns);
+    }
 
 #ifdef TRTIS_ENABLE_METRICS
     if (metric_reporter_ != nullptr) {

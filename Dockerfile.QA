@@ -75,15 +75,16 @@ RUN mkdir -p qa/common && \
     cp -r docs/examples/model_repository/simple qa/L0_cuda_shared_memory/models/. && \
     mkdir qa/L0_cmdline_trace/models && \
     cp -r docs/examples/model_repository/simple qa/L0_cmdline_trace/models/. && \
-    mkdir qa/L0_grpc_v2/models && \
     cp -r /workspace/docs/examples/model_repository/simple qa/L0_grpc_v2/models && \
     cp -r /workspace/docs/examples/model_repository/simple_string qa/L0_grpc_v2/models && \
     cp -r /workspace/docs/examples/model_repository/inception_graphdef qa/L0_grpc_v2/models && \
     mkdir qa/L0_http_v2/models && \
     cp -r /workspace/docs/examples/model_repository/simple qa/L0_http_v2/models && \
-    cp /opt/tensorrtserver/bin/simple qa/L0_simple_lib/. && \
-    cp /opt/tensorrtserver/bin/simplev2 qa/L0_simple_lib/. && \
-    cp /opt/tensorrtserver/bin/memory_alloc qa/L0_io/. && \
+    cp -r /workspace/docs/examples/model_repository/inception_graphdef qa/L0_http_v2/models && \
+    cp -r /workspace/docs/examples/ensemble_model_repository qa/L0_perf_client/ && \
+    cp /opt/tritonserver/bin/simple qa/L0_simple_lib/. && \
+    cp /opt/tritonserver/bin/simplev2 qa/L0_simple_lib/. && \
+    cp /opt/tritonserver/bin/memory_alloc qa/L0_io/. && \
     cp /workspace/builddir/trtis-test-utils/install/bin/memory_test qa/L0_memory/.
 
 RUN cp /workspace/builddir/trtis-test-utils/install/bin/caffe2plan qa/common/.
@@ -117,6 +118,10 @@ RUN mkdir -p qa/L0_custom_image_preprocess/models/image_preprocess_nhwc_224x224x
     cp builddir/trtis-custom-backends/install/lib/libimagepreprocess.so \
         qa/L0_custom_image_preprocess/models/image_preprocess_nhwc_224x224x3/1/.
 
+RUN mkdir -p qa/L0_perf_client/ensemble_model_repository/image_preprocess_nchw_3x224x224_inception/1 && \
+    cp builddir/trtis-custom-backends/install/lib/libimagepreprocess.so \
+        qa/L0_perf_client/ensemble_model_repository/image_preprocess_nchw_3x224x224_inception/1/.
+
 RUN mkdir -p qa/L0_custom_param/models/param/1 && \
     cp builddir/trtis-custom-backends/install/lib/libparam.so \
         qa/L0_custom_param/models/param/1/.
@@ -130,6 +135,9 @@ RUN mkdir -p qa/L0_simple_sequence_example/models/simple_sequence/1 && \
     mkdir -p qa/L0_backend_release/simple_seq_models/simple_sequence/1 && \
     cp builddir/trtis-custom-backends/install/lib/libsequence.so \
         qa/L0_backend_release/simple_seq_models/simple_sequence/1/. && \
+    mkdir -p qa/L0_grpc_v2/models/simple_sequence/1 && \
+    cp builddir/trtis-custom-backends/install/lib/libsequence.so \
+        qa/L0_grpc_v2/models/simple_sequence/1/. && \
     mkdir -p qa/custom_models/custom_sequence_int32/1 && \
     cp builddir/trtis-custom-backends/install/lib/libsequence.so \
         qa/custom_models/custom_sequence_int32/1/. && \
@@ -266,16 +274,16 @@ RUN rm -f /usr/bin/python && \
 
 RUN pip3 install --upgrade numpy pillow future grpcio requests gsutil awscli six
 
-# CI expects tests in /opt/tensorrtserver/qa. The tensorrt-server
-# (1000) user should own all artifacts in case CI is run using
-# tensorrt-server user.
-WORKDIR /opt/tensorrtserver
+# CI expects tests in /opt/tritonserver/qa. The triton-server (1000)
+# user should own all artifacts in case CI is run using triton-server
+# user.
+WORKDIR /opt/tritonserver
 COPY --chown=1000:1000 --from=cbe /workspace/qa/ qa/
 
 # Remove CI tests that are meant to run only on build image and
-# install the tensorrtserver/triton python client APIs.
+# install the tritonserver/triton python client APIs.
 RUN rm -fr qa/L0_copyrights qa/L0_build_variants && \
     pip3 install --upgrade qa/pkgs/tensorrtserver*.whl && \
     pip3 install --upgrade qa/pkgs/triton*.whl
 
-ENV LD_LIBRARY_PATH /opt/tensorrtserver/qa/clients:${LD_LIBRARY_PATH}
+ENV LD_LIBRARY_PATH /opt/tritonserver/qa/clients:${LD_LIBRARY_PATH}

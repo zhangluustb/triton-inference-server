@@ -59,7 +59,7 @@ change directory to the root of the repo and checkout the release
 version of the branch that you want to build (or the master branch if
 you want to build the under-development version)::
 
-  $ git checkout r20.02
+  $ git checkout r20.03
 
 Then use docker to build::
 
@@ -90,8 +90,8 @@ with::
 When the build completes the binary, libraries and headers can be
 found in trtis/install. To overwrite the existing versions::
 
-  # cp trtis/install/bin/trtserver /opt/tensorrtserver/bin/.
-  # cp trtis/install/lib/libtrtserver.so /opt/tensorrtserver/lib/.
+  # cp trtis/install/bin/tritonserver /opt/tritonserver/bin/.
+  # cp trtis/install/lib/libtritonserver.so /opt/tritonserver/lib/.
 
 You can reconfigure the build by running *cmake* as described in
 :ref:`section-building-the-server-with-cmake`.
@@ -106,7 +106,7 @@ CMake, change directory to the root of the repo and checkout the
 release version of the branch that you want to build (or the master
 branch if you want to build the under-development version)::
 
-  $ git checkout r20.02
+  $ git checkout r20.03
 
 Next you must build or install each framework backend you want to
 enable in the inference server, configure the inference server to

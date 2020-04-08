@@ -25,7 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-REPO_VERSION=${NVIDIA_TENSORRT_SERVER_VERSION}
+REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
 fi
@@ -42,7 +42,7 @@ CLIENT_LOG_BASE="./client"
 DATADIR=`pwd`/models
 MODEL_SRCDIR=/data/inferenceserver/${REPO_VERSION}/qa_custom_ops/tf_custom_ops
 
-SERVER=/opt/tensorrtserver/bin/trtserver
+SERVER=/opt/tritonserver/bin/tritonserver
 # Allow more time to exit. Ensemble brings in too many models
 SERVER_LOG_BASE="./inference_server.log"
 
@@ -61,7 +61,7 @@ NUM_DELAY_CYCLES=${NUM_DELAY_CYCLES:=2100000000}
 
 # Must explicitly set LD_LIBRARY_PATH so that the custom operations
 # can find libtensorflow_framework.so.
-LD_LIBRARY_PATH=/opt/tensorrtserver/lib/tensorflow:$LD_LIBRARY_PATH
+LD_LIBRARY_PATH=/opt/tritonserver/lib/tensorflow:$LD_LIBRARY_PATH
 
 rm -f $SERVER_LOG_BASE* $CLIENT_LOG_BASE*
 

@@ -31,40 +31,55 @@
 #include "src/core/memory.h"
 #include "src/core/model_config.h"
 #include "src/core/status.h"
+#include "src/core/tritonserver.h"
 
 namespace nvidia { namespace inferenceserver {
 
+// FIXMEV2 shouldn't need the conversions
+TRTSERVER_Memory_Type TritonMemTypeToTrt(TRITONSERVER_Memory_Type mem_type);
+
+TRITONSERVER_Memory_Type TrtMemTypeToTriton(TRTSERVER_Memory_Type mem_type);
+
 class InferenceBackend;
 class InferenceServer;
-class InferSharedMemory;
 
 //
 // An inference request. A request can be used multiple times for
 // inference but before each inference PrepareForInference() must be
 // called to verify and prepare the request. Verification involves
 // ensuring that any changes made since the last inference are
-// valid. Preparing involves removing/reseting any state left over
-// from the previous inference.
+// valid. Preparing involves removing/resetting any state left over
+// from the previous inference. After each inference
+// CleanupFromInference() must be called.
 //
 class InferenceRequest {
  public:
   // Input tensor
   class Input {
    public:
-    Input() = default;
+    Input();
     Input(
         const std::string& name, const std::vector<int64_t>& shape,
         const uint64_t batch_byte_size);
     Input(
-        const std::string& name, const std::string& datatype,
-        const int64_t* shape, const uint64_t dim_count);
+        const std::string& name, const DataType datatype,
+        const std::vector<int64_t>& shape, const uint64_t batch_byte_size);
+    Input(
+        const std::string& name, const DataType datatype, const int64_t* shape,
+        const uint64_t dim_count);
 
     // The name of the input tensor. There is no mutable operator for
     // the name because it is used in a InferenceReference map and a
     // mutable method would allow it to get out-of-sync.
     const std::string& Name() const { return name_; }
 
-    // Or original shape of the input tensor.
+    // Data type of the input tensor.
+    DataType DType() const { return datatype_; }
+
+    // FIXMEV2 Datatype should always be set by constructor for V2
+    void SetDType(const DataType t) { datatype_ = t; }
+
+    // The original shape of the input tensor.
     const std::vector<int64_t>& OriginalShape() const
     {
       return original_shape_;
@@ -88,24 +103,29 @@ class InferenceRequest {
         const void* base, size_t byte_size, TRTSERVER_Memory_Type memory_type,
         int64_t memory_type_id);
 
-    // Set the data for this input. Error is input already has some
+    // Append a new buffer of data to this input.
+    Status AppendData(
+        const void* base, size_t byte_size,
+        TRITONSERVER_Memory_Type memory_type, int64_t memory_type_id);
+
+    // Set the data for this input. Error if input already has some
     // data.
     Status SetData(const std::shared_ptr<Memory>& data);
 
     // Remove all existing data for the input.
     Status RemoveAllData();
 
-    // Prepare this input for inference.
-    void PrepareForInference();
+    // Get the number of buffers that containing the input tensor
+    // data.
+    size_t ContentBufferCount() const
+    {
+      return (data_ == nullptr) ? 0 : data_->BufferCount();
+    }
 
-    // Get the next contiguous chunk of bytes for the input. Return a
-    // pointer to the chunk in 'content'.  If there are no more bytes
-    // for the input return 'content' == nullptr.  'content_byte_size'
-    // acts as both input and output. On input 'content_byte_size' is
-    // a hint of the maximum chunk size that should be returned in
-    // 'content' and must be non-zero unless no additional input is
-    // expected. On return 'content_byte_size' gives the actual size
-    // of the chunk pointed to by 'content'.  'memory_type' acts as
+    // Get the 'idx' buffer containing a contiguous chunk of bytes for
+    // the input. Return error is 'idx' refers to a buffer that does
+    // not exist. Return a pointer to the chunk in 'content' and the
+    // size of the chunk in 'content_byte_size'. 'memory_type' acts as
     // both input and output. On input 'memory_type' is the buffer
     // memory type preferred by the function caller. On return
     // 'memory_type' gives the actual memory type of the chunk pointed
@@ -114,13 +134,16 @@ class InferenceRequest {
     // preferred by the function caller.  On return 'memory_type_id'
     // gives the actual memory type id of the chunk pointed to by
     // 'content'.
-    virtual Status NextContent(
-        const void** content, size_t* content_byte_size,
-        TRTSERVER_Memory_Type* memory_type, int64_t* memory_type_id);
+    Status Content(
+        const size_t idx, const void** content, size_t* content_byte_size,
+        TRTSERVER_Memory_Type* memory_type, int64_t* memory_type_id) const;
 
    private:
+    friend std::ostream& operator<<(
+        std::ostream& out, const InferenceRequest::Input& input);
+
     std::string name_;
-    std::string datatype_;
+    DataType datatype_;
     std::vector<int64_t> original_shape_;
     std::vector<int64_t> shape_;
 
@@ -128,7 +151,6 @@ class InferenceRequest {
     uint64_t batch_byte_size_;
 
     std::shared_ptr<Memory> data_;
-    size_t data_idx_;
   };
 
   // Requested output tensor
@@ -150,6 +172,9 @@ class InferenceRequest {
     void SetClassificationCount(uint32_t c) { classification_cnt_ = c; }
 
    private:
+    friend std::ostream& operator<<(
+        std::ostream& out, const InferenceRequest::RequestedOutput& output);
+
     std::string name_;
 
     // If > 0 then return result as a classification with the
@@ -157,6 +182,7 @@ class InferenceRequest {
     uint32_t classification_cnt_;
   };
 
+  // InferenceRequest
   InferenceRequest(
       const std::string& model_name, const int64_t requested_model_version,
       const int64_t actual_model_version, const uint32_t protocol_version);
@@ -194,13 +220,53 @@ class InferenceRequest {
   uint64_t TimeoutMicroseconds() const { return timeout_us_; }
   void SetTimeoutMicroseconds(uint64_t t) { timeout_us_ = t; }
 
-  Status MutableInput(const std::string& name, Input** input);
-  std::unordered_map<std::string, Input>* MutableInputs()
+  // The original inputs are the inputs added to the request before
+  // the inference executed (that is before
+  // TRITONSERVER_ServerInferAsync or equivalent is called). Once
+  // execution has started the original inputs should not be modified
+  // until execution completes (and those modifications will apply to
+  // the next inference execution).
+  Status MutableOriginalInput(const std::string& name, Input** input);
+  std::unordered_map<std::string, Input>* MutableOriginalInputs()
   {
     needs_normalization_ = true;
-    return &inputs_;
+    return &original_inputs_;
   }
-  const std::unordered_map<std::string, Input>& Inputs() const
+  const std::unordered_map<std::string, Input>& OriginalInputs() const
+  {
+    return original_inputs_;
+  }
+
+  // The override inputs are the inputs added to the request after
+  // inference execution has started (that is after
+  // TRITONSERVER_ServerInferAsync or equivalent is called). During
+  // inference processing, if Triton needs to change an original input
+  // it will add an override instead of changing the original. Triton
+  // will also use an override if it needs to add a new input to the
+  // request. Overrides are recorded as shared_ptr so that the same
+  // override can be used efficiently multiple times or even in
+  // multiple requests simultaneously. Must be careful not to modify
+  // an override input if it is being shared unless you want that
+  // change to be reflected in all requests that hold that override
+  // input. Override inputs within a specific request are not
+  // persisted across inference calls.
+  std::unordered_map<std::string, std::shared_ptr<Input>>*
+  MutableOverrideInputs()
+  {
+    return &override_inputs_;
+  }
+  const std::unordered_map<std::string, std::shared_ptr<Input>>&
+  OverrideInputs() const
+  {
+    return override_inputs_;
+  }
+
+  // Get an input taking into account both original inputs and
+  // overrides. If an override input is available use it, otherwise
+  // use the original input. Accessing inputs via this method is not
+  // valid until after PrepareForInference is called.
+  Status ImmutableInput(const std::string& name, const Input** input) const;
+  const std::unordered_map<std::string, Input*>& ImmutableInputs() const
   {
     return inputs_;
   }
@@ -213,21 +279,31 @@ class InferenceRequest {
     return requested_outputs_;
   }
 
-  // Add an input to the request. If 'input' is non-null return a
-  // pointer to the newly added input.
-  Status AddInput(
+  // Add an original input to the request. If 'input' is non-null
+  // return a pointer to the newly added input.
+  Status AddOriginalInput(
       const std::string& name, const DimsList& shape,
       const uint64_t batch_byte_size, Input** input = nullptr);
-  Status AddInput(
+  Status AddOriginalInput(
       const std::string& name, const std::vector<int64_t>& shape,
       const uint64_t batch_byte_size, Input** input = nullptr);
-  Status AddInput(
-      const std::string& name, const std::string& datatype,
-      const int64_t* shape, const uint64_t dim_count, Input** input = nullptr);
+  Status AddOriginalInput(
+      const std::string& name, const DataType datatype, const int64_t* shape,
+      const uint64_t dim_count, Input** input = nullptr);
 
-  // Remove a single input or all inputs.
-  Status RemoveInput(const std::string& name);
-  Status RemoveAllInputs();
+  // Remove a single original input or all inputs.
+  Status RemoveOriginalInput(const std::string& name);
+  Status RemoveAllOriginalInputs();
+
+  // Add an override input to the request. If 'input' is non-null
+  // return a pointer to the newly added input.
+  Status AddOverrideInput(
+      const std::string& name, const DataType datatype,
+      const std::vector<int64_t>& shape, const uint64_t batch_byte_size,
+      std::shared_ptr<Input>* input = nullptr);
+
+  // Add an override input to the request.
+  Status AddOverrideInput(const std::shared_ptr<Input>& input);
 
   // Request an output.
   Status AddRequestedOutput(
@@ -243,6 +319,9 @@ class InferenceRequest {
   Status PrepareForInference(const InferenceBackend& backend);
 
  private:
+  friend std::ostream& operator<<(
+      std::ostream& out, const InferenceRequest& request);
+
   Status NormalizeV1(const InferenceBackend& backend);
   Status NormalizeV2(const InferenceBackend& backend);
 
@@ -271,8 +350,16 @@ class InferenceRequest {
   uint32_t priority_;
   uint64_t timeout_us_;
 
-  std::unordered_map<std::string, Input> inputs_;
+  std::unordered_map<std::string, Input> original_inputs_;
+  std::unordered_map<std::string, std::shared_ptr<Input>> override_inputs_;
+  std::unordered_map<std::string, Input*> inputs_;
   std::unordered_map<std::string, RequestedOutput> requested_outputs_;
 };
+
+std::ostream& operator<<(std::ostream& out, const InferenceRequest& request);
+std::ostream& operator<<(
+    std::ostream& out, const InferenceRequest::Input& input);
+std::ostream& operator<<(
+    std::ostream& out, const InferenceRequest::RequestedOutput& output);
 
 }}  // namespace nvidia::inferenceserver

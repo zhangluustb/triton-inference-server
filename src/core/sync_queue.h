@@ -25,9 +25,10 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #pragma once
 
-#include <condition_variable>
 #include <deque>
+#include <memory>
 #include <mutex>
+#include "src/core/cond_var.h"
 
 namespace nvidia { namespace inferenceserver {
 
@@ -37,7 +38,14 @@ namespace nvidia { namespace inferenceserver {
 template <typename Item>
 class SyncQueue {
  public:
-  SyncQueue() {}
+  SyncQueue(bool busy_wait = true)
+  {
+    if (busy_wait) {
+      cv_.reset(new BusyWaitCondVar<std::mutex>());
+    } else {
+      cv_.reset(new StdCondVar<std::mutex>());
+    }
+  }
 
   bool Empty()
   {
@@ -49,7 +57,7 @@ class SyncQueue {
   {
     std::unique_lock<std::mutex> lk(mu_);
     if (queue_.empty()) {
-      cv_.wait(lk, [this] { return !queue_.empty(); });
+      cv_->Wait(lk, [this] { return !queue_.empty(); });
     }
     auto res = queue_.front();
     queue_.pop_front();
@@ -62,12 +70,12 @@ class SyncQueue {
       std::lock_guard<std::mutex> lk(mu_);
       queue_.push_back(value);
     }
-    cv_.notify_all();
+    cv_->NotifyAll();
   }
 
  private:
   std::mutex mu_;
-  std::condition_variable cv_;
+  std::unique_ptr<CondVar<std::mutex>> cv_;
   std::deque<Item> queue_;
 };
 
