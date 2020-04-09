@@ -742,6 +742,8 @@ void
 EnsembleContext::ScheduleSteps(
     const std::shared_ptr<EnsembleContext>& context, const StepList& steps)
 {
+  // FIXME
+#if 0
   for (const auto& step : steps) {
 #ifdef TRTIS_ENABLE_STATS
     auto infer_stats = std::make_shared<ModelInferStats>(
@@ -789,6 +791,7 @@ EnsembleContext::ScheduleSteps(
           Proceed(context, step);
         });
   }
+#endif
 }
 
 }  // namespace
