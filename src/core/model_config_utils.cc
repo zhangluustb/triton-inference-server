@@ -248,7 +248,7 @@ ValidateEnsembleSchedulingConfig(const ModelConfig& config)
   return Status::Success;
 }
 
-#endif // TRTIS_ENABLE_ENSEMBLE
+#endif  // TRTIS_ENABLE_ENSEMBLE
 
 template <class ModelIO>
 Status
@@ -1011,10 +1011,9 @@ ValidateModelConfig(
 #ifdef TRTIS_ENABLE_ENSEMBLE
     RETURN_IF_ERROR(ValidateEnsembleSchedulingConfig(config));
 #else
-      return Status(
-          Status::Code::INVALID_ARG,
-          "ensemble scheduling not supported");
-#endif // TRTIS_ENABLE_ENSEMBLE
+    return Status(
+        Status::Code::INVALID_ARG, "ensemble scheduling not supported");
+#endif  // TRTIS_ENABLE_ENSEMBLE
   } else {
 #ifdef TRTIS_ENABLE_ENSEMBLE
     if (config.platform() == kEnsemblePlatform) {
@@ -1023,7 +1022,7 @@ ValidateModelConfig(
           "ensemble scheduling must be set for ensemble " + config.name() +
               " whose platform is " + kEnsemblePlatform);
     }
-#endif // TRTIS_ENABLE_ENSEMBLE
+#endif  // TRTIS_ENABLE_ENSEMBLE
 
     if (config.instance_group().size() == 0) {
       return Status(
