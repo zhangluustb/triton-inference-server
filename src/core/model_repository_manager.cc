@@ -50,7 +50,9 @@
 #ifdef TRTIS_ENABLE_CUSTOM
 #include "src/backends/custom/custom_backend_factory.h"
 #endif  // TRTIS_ENABLE_CUSTOM
+#ifdef TRTIS_ENABLE_ENSEMBLE
 #include "src/backends/ensemble/ensemble_backend_factory.h"
+#endif  // TRTIS_ENABLE_ENSEMBLE
 #ifdef TRTIS_ENABLE_ONNXRUNTIME
 #include "src/backends/onnx/onnx_backend_factory.h"
 #endif  // TRTIS_ENABLE_ONNXRUNTIME
@@ -65,115 +67,114 @@
 #include "src/backends/tensorrt/plan_backend_factory.h"
 #endif  // TRTIS_ENABLE_TENSORRT
 
-namespace nvidia { namespace inferenceserver {
+namespace nvidia {
+namespace inferenceserver {
 
 namespace {
 
-void
-BuildBackendConfigMap(
+void BuildBackendConfigMap(
     const std::string& version, const bool strict_model_config,
     const float tf_gpu_memory_fraction, const bool tf_allow_soft_placement,
     const std::map<int, std::pair<int, uint64_t>> tf_vgpu_memory_limit_mb,
-    BackendConfigMap* backend_configs)
-{
+    BackendConfigMap* backend_configs){
 #ifdef TRTIS_ENABLE_TENSORFLOW
-  //// Tensorflow GraphDef and SavedModel
-  {
-    auto graphdef_config = std::make_shared<GraphDefBackendFactory::Config>();
-    graphdef_config->autofill = !strict_model_config;
+    //// Tensorflow GraphDef and SavedModel
+    {auto graphdef_config = std::make_shared<GraphDefBackendFactory::Config>();
+graphdef_config->autofill = !strict_model_config;
 
-    if (tf_gpu_memory_fraction == 0.0) {
-      graphdef_config->allow_gpu_memory_growth = true;
-    } else {
-      graphdef_config->allow_gpu_memory_growth = false;
-      graphdef_config->per_process_gpu_memory_fraction = tf_gpu_memory_fraction;
-    }
+if (tf_gpu_memory_fraction == 0.0) {
+  graphdef_config->allow_gpu_memory_growth = true;
+} else {
+  graphdef_config->allow_gpu_memory_growth = false;
+  graphdef_config->per_process_gpu_memory_fraction = tf_gpu_memory_fraction;
+}
 
 #ifdef TRTIS_ENABLE_GPU
-    int device_cnt = 0;
-    cudaError_t cuerr = cudaGetDeviceCount(&device_cnt);
-    if ((cuerr == cudaErrorNoDevice) ||
-        (cuerr == cudaErrorInsufficientDriver)) {
-      device_cnt = 0;
-    } else if (cuerr != cudaSuccess) {
-      LOG_ERROR << "unable to get number of CUDA devices while building "
-                   "BackendConfigMap: ("
-                << cuerr << ") " << cudaGetErrorString(cuerr);
-      device_cnt = 0;
-    }
+int device_cnt = 0;
+cudaError_t cuerr = cudaGetDeviceCount(&device_cnt);
+if ((cuerr == cudaErrorNoDevice) || (cuerr == cudaErrorInsufficientDriver)) {
+  device_cnt = 0;
+} else if (cuerr != cudaSuccess) {
+  LOG_ERROR << "unable to get number of CUDA devices while building "
+               "BackendConfigMap: ("
+            << cuerr << ") " << cudaGetErrorString(cuerr);
+  device_cnt = 0;
+}
 
-    if (!tf_vgpu_memory_limit_mb.empty()) {
-      for (int device = 0; device < device_cnt; device++) {
-        auto device_mapping = tf_vgpu_memory_limit_mb.find(device);
-        if (device_mapping != tf_vgpu_memory_limit_mb.end()) {
-          graphdef_config->memory_limit_mb[device] = std::vector<float>(
-              device_mapping->second.first, device_mapping->second.second);
-        } else {
-          graphdef_config->memory_limit_mb[device] = {};
-        }
-      }
-      graphdef_config->per_process_gpu_memory_fraction = 0.0;
+if (!tf_vgpu_memory_limit_mb.empty()) {
+  for (int device = 0; device < device_cnt; device++) {
+    auto device_mapping = tf_vgpu_memory_limit_mb.find(device);
+    if (device_mapping != tf_vgpu_memory_limit_mb.end()) {
+      graphdef_config->memory_limit_mb[device] = std::vector<float>(
+          device_mapping->second.first, device_mapping->second.second);
+    } else {
+      graphdef_config->memory_limit_mb[device] = {};
     }
+  }
+  graphdef_config->per_process_gpu_memory_fraction = 0.0;
+}
 #endif  // TRTIS_ENABLE_GPU
 
-    graphdef_config->allow_soft_placement = tf_allow_soft_placement;
+graphdef_config->allow_soft_placement = tf_allow_soft_placement;
 
-    (*backend_configs)[kTensorFlowGraphDefPlatform] = graphdef_config;
-    (*backend_configs)[kTensorFlowSavedModelPlatform] = graphdef_config;
-  }
+(*backend_configs)[kTensorFlowGraphDefPlatform] = graphdef_config;
+(*backend_configs)[kTensorFlowSavedModelPlatform] = graphdef_config;
+}
 #endif  // TRTIS_ENABLE_TENSORFLOW
 
 #ifdef TRTIS_ENABLE_CAFFE2
-  //// Caffe NetDef
-  {
-    auto netdef_config = std::make_shared<NetDefBackendFactory::Config>();
-    netdef_config->autofill = !strict_model_config;
-    (*backend_configs)[kCaffe2NetDefPlatform] = netdef_config;
-  }
+//// Caffe NetDef
+{
+  auto netdef_config = std::make_shared<NetDefBackendFactory::Config>();
+  netdef_config->autofill = !strict_model_config;
+  (*backend_configs)[kCaffe2NetDefPlatform] = netdef_config;
+}
 #endif  // TRTIS_ENABLE_CAFFE2
 
 #ifdef TRTIS_ENABLE_TENSORRT
-  //// TensorRT
-  {
-    auto plan_config = std::make_shared<PlanBackendFactory::Config>();
-    plan_config->autofill = !strict_model_config;
-    (*backend_configs)[kTensorRTPlanPlatform] = plan_config;
-  }
+//// TensorRT
+{
+  auto plan_config = std::make_shared<PlanBackendFactory::Config>();
+  plan_config->autofill = !strict_model_config;
+  (*backend_configs)[kTensorRTPlanPlatform] = plan_config;
+}
 #endif  // TRTIS_ENABLE_TENSORRT
 
 #ifdef TRTIS_ENABLE_ONNXRUNTIME
-  //// OnnxRuntime Onnx
-  {
-    auto onnx_config = std::make_shared<OnnxBackendFactory::Config>();
-    onnx_config->autofill = !strict_model_config;
-    (*backend_configs)[kOnnxRuntimeOnnxPlatform] = onnx_config;
-  }
+//// OnnxRuntime Onnx
+{
+  auto onnx_config = std::make_shared<OnnxBackendFactory::Config>();
+  onnx_config->autofill = !strict_model_config;
+  (*backend_configs)[kOnnxRuntimeOnnxPlatform] = onnx_config;
+}
 #endif  // TRTIS_ENABLE_ONNXRUNTIME
 
 #ifdef TRTIS_ENABLE_PYTORCH
-  //// PyTorch LibTorch
-  {
-    auto libtorch_config = std::make_shared<LibTorchBackendFactory::Config>();
-    libtorch_config->autofill = !strict_model_config;
-    (*backend_configs)[kPyTorchLibTorchPlatform] = libtorch_config;
-  }
+//// PyTorch LibTorch
+{
+  auto libtorch_config = std::make_shared<LibTorchBackendFactory::Config>();
+  libtorch_config->autofill = !strict_model_config;
+  (*backend_configs)[kPyTorchLibTorchPlatform] = libtorch_config;
+}
 #endif  // TRTIS_ENABLE_PYTORCH
 
 #ifdef TRTIS_ENABLE_CUSTOM
-  //// Custom
-  {
-    auto custom_config = std::make_shared<CustomBackendFactory::Config>();
-    custom_config->inference_server_version = version;
-    (*backend_configs)[kCustomPlatform] = custom_config;
-  }
+//// Custom
+{
+  auto custom_config = std::make_shared<CustomBackendFactory::Config>();
+  custom_config->inference_server_version = version;
+  (*backend_configs)[kCustomPlatform] = custom_config;
+}
 #endif  // TRTIS_ENABLE_CUSTOM
 
-  //// Ensemble
-  {
-    auto ensemble_config = std::make_shared<EnsembleBackendFactory::Config>();
-    (*backend_configs)[kEnsemblePlatform] = ensemble_config;
-  }
+#ifdef TRTIS_ENABLE_ENSEMBLE
+//// Ensemble
+{
+  auto ensemble_config = std::make_shared<EnsembleBackendFactory::Config>();
+  (*backend_configs)[kEnsemblePlatform] = ensemble_config;
 }
+#endif  // TRTIS_ENABLE_ENSEMBLE
+}  // namespace inferenceserver
 
 int64_t
 GetModifiedTime(const std::string& path)
@@ -250,7 +251,7 @@ struct BackendDeleter {
   std::function<void()> OnDestroyBackend_;
 };
 
-}  // namespace
+}  // namespace nvidia
 
 struct ModelRepositoryManager::ModelInfo {
   // [TODO] split modification time into versions' and model's
@@ -386,7 +387,9 @@ class ModelRepositoryManager::BackendLifeCycle {
 #ifdef TRTIS_ENABLE_PYTORCH
   std::unique_ptr<LibTorchBackendFactory> libtorch_factory_;
 #endif  // TRTIS_ENABLE_PYTORCH
+#ifdef TRTIS_ENABLE_ENSEMBLE
   std::unique_ptr<EnsembleBackendFactory> ensemble_factory_;
+#endif  // TRTIS_ENABLE_ENSEMBLE
 };
 
 Status
@@ -453,12 +456,14 @@ ModelRepositoryManager::BackendLifeCycle::Create(
         config, &(local_life_cycle->custom_factory_)));
   }
 #endif  // TRTIS_ENABLE_CUSTOM
+#ifdef TRTIS_ENABLE_ENSEMBLE
   {
     const std::shared_ptr<BackendConfig>& config =
         backend_map.find(kEnsemblePlatform)->second;
     RETURN_IF_ERROR(EnsembleBackendFactory::Create(
         server, config, &(local_life_cycle->ensemble_factory_)));
   }
+#endif  // TRTIS_ENABLE_ENSEMBLE
 
   *life_cycle = std::move(local_life_cycle);
   return Status::Success;
@@ -824,10 +829,12 @@ ModelRepositoryManager::BackendLifeCycle::CreateInferenceBackend(
           min_compute_capability_, &is);
       break;
 #endif  // TRTIS_ENABLE_CUSTOM
+#ifdef TRTIS_ENABLE_ENSEMBLE
     case Platform::PLATFORM_ENSEMBLE:
       status = ensemble_factory_->CreateBackend(
           version_path, model_config, min_compute_capability_, &is);
       break;
+#endif  // TRTIS_ENABLE_ENSEMBLE
     default:
       break;
   }
@@ -1289,7 +1296,8 @@ ModelRepositoryManager::LoadUnloadModels(
             &polled));
         *all_models_polled &= polled;
 
-        // More models should be polled is the polled models are ensembles
+        // More models should be polled if the polled models are
+        // ensembles
         std::set<std::string> next_models;
         for (const auto& model : models) {
           auto it = new_infos.find(model);
@@ -1663,7 +1671,9 @@ ModelRepositoryManager::UpdateDependencyGraph(
     }
   }
 
+#ifdef TRTIS_ENABLE_ENSEMBLE
   ValidateEnsembleConfig(&affected_ensembles);
+#endif // TRTIS_ENABLE_ENSEMBLE
 
   return Status::Success;
 }
@@ -1897,5 +1907,5 @@ ModelRepositoryManager::VersionsToLoad(
 
   return Status::Success;
 }
-
-}}  // namespace nvidia::inferenceserver
+}
+}  // namespace nvidia::inferenceserver
